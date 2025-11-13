@@ -48,7 +48,7 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
 
-  static const _titles = ['Step Counter', 'Ustawienia'];
+  static const _titles = ['Step Counter', 'Step Counter'];
   static const _pages = [
     DashboardPage(),
     SettingsPage(),

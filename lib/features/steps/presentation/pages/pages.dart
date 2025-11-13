@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../data/goal_store.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/services.dart';
 
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
@@ -16,20 +17,19 @@ class _DashboardPageState extends State<DashboardPage> {
 
   late final DateTime _today = DateTime.now();
   late DateTime _current = _truncate(_today);
-  int? _goal;
+  int _goal = GoalStore.cachedGoal;
 
   static DateTime _truncate(DateTime d) => DateTime(d.year, d.month, d.day);
 
   DateTime _shiftDay(DateTime d, int offset) => DateTime(d.year, d.month, d.day + offset);
   int _indexFor(DateTime day) => _center + day.difference(_truncate(_today)).inDays;
 
-  // ===== Założenia (później zrobimy edycję w UI)
-  static const double _strideMeters = 0.78; // długość kroku
-  static const double _cadenceSpm = 100;    // kroki/min
-  static const double _weightKg = 70;       // waga użytkownika
-  static const double _metWalking = 3.5;    // MET dla marszu
+  // assumption
+  static const double _strideMeters = 0.78;
+  static const double _cadenceSpm = 100;
+  static const double _weightKg = 70;
+  static const double _metWalking = 3.5;
 
-  // ===== Obliczenia metryk
   int _durationMinutes(int steps) => (steps / _cadenceSpm).round();
   double _distanceKm(int steps) => (steps * _strideMeters) / 1000.0;
   int _caloriesKcal(int steps) {
@@ -58,6 +58,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
   void _go(int offsetDays) {
     final targetDay = _shiftDay(_current, offsetDays);
+    if (targetDay.isAfter(_truncate(_today))) return;
     _controller.animateToPage(
       _indexFor(targetDay),
       duration: const Duration(milliseconds: 250),
@@ -65,14 +66,14 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  // ===== MOCK: 24 "godzinne" biny aktywności (większe wartości w ciągu dnia)
+  // mocked data
   List<int> _mockHourlyFor(DateTime day) {
     final d = _truncate(day);
     final seed = d.millisecondsSinceEpoch ~/ (24 * 3600 * 1000);
     return List<int>.generate(24, (h) {
-      final base = ((seed * 73 + h * 31) % 9) + 1; // 1..9
+      final base = ((seed * 73 + h * 31) % 9) + 1;
       final isDay = h >= 7 && h <= 21;
-      return base * (isDay ? 250 : 60); // „dzienne” piki
+      return base * (isDay ? 250 : 60);
     });
   }
 
@@ -80,64 +81,21 @@ class _DashboardPageState extends State<DashboardPage> {
     final picked = await showDatePicker(
       context: context,
       initialDate: _current,
-      firstDate: DateTime(2020),
-      lastDate: DateTime.now().add(const Duration(days: 365)),
+      firstDate: DateTime(2025),
+      lastDate: _truncate(_today),
       locale: const Locale('pl', 'PL'),
     );
     if (picked != null) _jumpTo(_truncate(picked));
   }
 
   Future<void> _editGoal() async {
-    int tmp = _goal ?? 8000;
     final picked = await showModalBottomSheet<int>(
       context: context,
       showDragHandle: true,
-      builder: (context) {
-        return SizedBox(
-          height: 360,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Ustaw cel dzienny (kroki)',
-                    style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                StatefulBuilder(
-                  builder: (context, setS) {
-                    return Column(
-                      children: [
-                        Slider(
-                          value: tmp.toDouble(),
-                          min: 2000,
-                          max: 20000,
-                          divisions: (20000 - 2000) ~/ 500,
-                          label: '$tmp',
-                          onChanged: (v) => setS(() => tmp = v.round()),
-                        ),
-                        Text('Wybrano: $tmp kroków'),
-                      ],
-                    );
-                  },
-                ),
-                const Spacer(),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(onPressed: () => Navigator.pop(context), child: const Text('Anuluj')),
-                    const SizedBox(width: 8),
-                    FilledButton(
-                      onPressed: () => Navigator.pop(context, tmp),
-                      child: const Text('Zapisz'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+      isScrollControlled: true,
+      builder: (_) => _GoalEditSheet(initial: _goal),
     );
+    
     if (picked != null) {
       await GoalStore.setGoal(picked);
       setState(() => _goal = picked);
@@ -163,6 +121,7 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   Widget build(BuildContext context) {
     final header = DateFormat('EEEE, d MMMM y').format(_current);
+    final bool isToday = _truncate(_current) == _truncate(_today);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -193,9 +152,14 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
               ),
               IconButton(
-                icon: const Icon(Icons.chevron_right),
-                tooltip: 'Następny dzień',
-                onPressed: () => _go(1),
+                icon: Icon(
+                  Icons.chevron_right,
+                  color: isToday
+                      ? Theme.of(context).disabledColor
+                      : Theme.of(context).iconTheme.color,
+                ),
+                tooltip: isToday ? 'To jest dzisiaj' : 'Następny dzień',
+                onPressed: isToday ? null : () => _go(1),
               ),
             ],
           ),
@@ -204,12 +168,13 @@ class _DashboardPageState extends State<DashboardPage> {
         Expanded(
           child: PageView.builder(
             controller: _controller,
+            itemCount: _center + 1,
             onPageChanged: (i) => setState(() => _current = _dateFromIndex(i)),
             itemBuilder: (context, index) {
               final date = _dateFromIndex(index);
                 
               final steps = _mockStepsFor(date);
-              final goal = _goal ?? 8000;   
+              final goal = _goal; 
               final progress = (steps / goal).clamp(0.0, 1.0);
               return ListView(
                 padding: const EdgeInsets.all(16),
@@ -274,25 +239,27 @@ class _StepsCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Text('Kroki', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
             Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Text('Kroki', style: theme.textTheme.titleMedium),
-                const Spacer(),
-                IconButton(
-                  tooltip: 'Zmień cel',
-                  icon: const Icon(Icons.edit),
+                Text('cel: $goal', style: theme.textTheme.labelLarge),
+                TextButton.icon(
                   onPressed: onEditGoal,
+                  icon: const Icon(Icons.edit, size: 16),
+                  label: const Text('Zmień cel'),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    minimumSize: const Size(0, 32),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
                 ),
               ],
             ),
-            const SizedBox(height: 4),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('$steps', style: theme.textTheme.displaySmall),
-                Text('cel: $goal', style: theme.textTheme.labelLarge),
-              ],
-            ),
+            const SizedBox(height: 8),
+            Text('$steps', style: theme.textTheme.displaySmall),
             const SizedBox(height: 12),
             Row(
               children: [
@@ -323,9 +290,9 @@ class _MetricsCard extends StatelessWidget {
     required this.distanceKm,
     required this.caloriesKcal,
   });
-  final String durationHm;   // "hh:mm"
-  final double distanceKm;   // np. 3.12
-  final int caloriesKcal;    // np. 210
+  final String durationHm;
+  final double distanceKm;
+  final int caloriesKcal;
 
   @override
   Widget build(BuildContext context) {
@@ -370,12 +337,27 @@ class _MetricTile extends StatelessWidget {
 
 class _HourlyChart extends StatelessWidget {
   const _HourlyChart({required this.data});
-  final List<int> data; // 24 wartości
+
+  final List<int> data;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final maxY = (data.reduce((a, b) => a > b ? a : b)).toDouble();
+
+    final int maxData =
+        data.isEmpty ? 0 : data.reduce((a, b) => a > b ? a : b);
+
+    final double baseMax = maxData == 0 ? 1000 : maxData.toDouble();
+
+    final double rawStep = baseMax / 4.0;
+
+    final int stepHundreds = ((rawStep + 99) ~/ 100) * 100;
+    final double yStep = stepHundreds.toDouble();
+
+    final double tickMaxY = yStep * 4;
+
+    String formatHour(int h) => h.toString().padLeft(2, '0');
+
     return Card(
       elevation: 0,
       child: Padding(
@@ -389,21 +371,78 @@ class _HourlyChart extends StatelessWidget {
               height: 180,
               child: BarChart(
                 BarChartData(
-                  maxY: maxY * 1.2, // trochę zapasu nad najwyższym słupkiem
-                  gridData: const FlGridData(show: false),
+                  maxY: tickMaxY,
+                  barTouchData: BarTouchData(
+                    enabled: true,
+                    touchTooltipData: BarTouchTooltipData(
+                      getTooltipColor: (group) =>
+                          theme.colorScheme.surface.withOpacity(0.95),
+                      tooltipBorderRadius: BorderRadius.circular(12),
+                      tooltipPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      fitInsideHorizontally: true,
+                      fitInsideVertically: true,
+                      getTooltipItem:
+                          (group, groupIndex, rod, rodIndex) {
+                        final hour = group.x;
+                        final start = formatHour(hour);
+                        final end = formatHour((hour + 1) % 24);
+                        final steps = rod.toY.toInt();
+
+                        final style = theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.colorScheme.onSurface,
+                          fontWeight: FontWeight.w600,
+                        );
+
+                        return BarTooltipItem(
+                          '$start:00 - $end:00\n$steps',
+                          style ?? const TextStyle(),
+                        );
+                      },
+                    ),
+                  ),
+                  gridData: FlGridData(
+                    show: true,
+                    drawVerticalLine: false,
+                    horizontalInterval: yStep,
+                  ),
                   borderData: FlBorderData(show: false),
                   titlesData: FlTitlesData(
-                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 40,
+                        interval: yStep,
+                        getTitlesWidget: (value, meta) {
+                          if (value < 0) return const SizedBox.shrink();
+                          return Text(
+                            value.toInt().toString(),
+                            style: theme.textTheme.labelSmall,
+                          );
+                        },
+                      ),
+                    ),
                     bottomTitles: AxisTitles(
                       sideTitles: SideTitles(
                         showTitles: true,
                         reservedSize: 18,
                         getTitlesWidget: (value, meta) {
                           final h = value.toInt();
-                          if (h % 3 != 0) return const SizedBox.shrink(); // podpis co 3h
-                          return Text('$h', style: Theme.of(context).textTheme.labelSmall);
+                          if (h % 3 != 0) {
+                            return const SizedBox.shrink();
+                          }
+                          return Text(
+                            '$h',
+                            style: theme.textTheme.labelSmall,
+                          );
                         },
                       ),
                     ),
@@ -426,6 +465,91 @@ class _HourlyChart extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _GoalEditSheet extends StatefulWidget {
+  const _GoalEditSheet({required this.initial});
+  final int initial;
+  @override
+  State<_GoalEditSheet> createState() => _GoalEditSheetState();
+}
+
+class _GoalEditSheetState extends State<_GoalEditSheet> {
+  late int tmp;
+  final _ctrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    tmp = widget.initial.clamp(500, 20000);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.of(context).viewInsets.bottom;
+    final sliderValue = tmp.clamp(500, 20000).toDouble();
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(16, 16, 16, bottom + 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Ustaw cel dzienny (kroki)',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          Slider(
+            value: sliderValue,
+            min: 500,
+            max: 20000,
+            divisions: (20000 - 500) ~/ 500, // krok 500
+            label: '${sliderValue.round()}',
+            onChanged: (v) => setState(() => tmp = v.round()),
+          ),
+          Text('Z suwaka: ${sliderValue.round()} kroków'),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _ctrl,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            decoration: const InputDecoration(
+              labelText: 'Lub wpisz własny cel (0–200 000)',
+              helperText: 'Pole działa niezależnie od suwaka',
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (_) => FocusScope.of(context).unfocus(),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Anuluj'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: () {
+                  final v = int.tryParse(_ctrl.text);
+                  final valid = v != null && v >= 0 && v <= 200000;
+                  Navigator.pop(context, valid ? v : tmp);
+                },
+                child: const Text('Zapisz'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
