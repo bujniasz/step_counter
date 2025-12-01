@@ -1,11 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../data/goal_store.dart';
+import '../../data/step_counter/step_counter_repository.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/services.dart';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:step_counter/core/permissions/activity_recognition_permission.dart';
 
 class DashboardPage extends StatefulWidget {
-  const DashboardPage({super.key});
+  const DashboardPage({
+    super.key,
+    required this.stepRepository,
+    });
+
+  final StepCounterRepository stepRepository;
 
   @override
   State<DashboardPage> createState() => _DashboardPageState();
@@ -19,7 +28,14 @@ class _DashboardPageState extends State<DashboardPage> {
   late DateTime _current = _truncate(_today);
   int _goal = GoalStore.cachedGoal;
 
+  int? _cachedTodaySteps;
+  List<int>? _cachedTodayHourly;
+
   static DateTime _truncate(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  bool _isSameDate(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
 
   DateTime _shiftDay(DateTime d, int offset) => DateTime(d.year, d.month, d.day + offset);
   int _indexFor(DateTime day) => _center + day.difference(_truncate(_today)).inDays;
@@ -67,15 +83,15 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   // mocked data
-  List<int> _mockHourlyFor(DateTime day) {
-    final d = _truncate(day);
-    final seed = d.millisecondsSinceEpoch ~/ (24 * 3600 * 1000);
-    return List<int>.generate(24, (h) {
-      final base = ((seed * 73 + h * 31) % 9) + 1;
-      final isDay = h >= 7 && h <= 21;
-      return base * (isDay ? 250 : 60);
-    });
-  }
+  // List<int> _mockHourlyFor(DateTime day) {
+  //   final d = _truncate(day);
+  //   final seed = d.millisecondsSinceEpoch ~/ (24 * 3600 * 1000);
+  //   return List<int>.generate(24, (h) {
+  //     final base = ((seed * 73 + h * 31) % 9) + 1;
+  //     final isDay = h >= 7 && h <= 21;
+  //     return base * (isDay ? 250 : 60);
+  //   });
+  // }
 
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
@@ -107,15 +123,38 @@ class _DashboardPageState extends State<DashboardPage> {
     super.initState();
       
     GoalStore.getGoal().then((v) => setState(() => _goal = v));
+
+    // Android 10+ wymaga runtime permission do liczenia kroków.
+    if (!kIsWeb && Platform.isAndroid) {
+      // Nie czekamy na wynik – dialog systemowy i tak wyskoczy,
+      // a repozytorium zacznie liczyć kroki po przyznaniu uprawnienia.
+      ensureActivityRecognitionPermission();
+    }
+
+    // Na start pobierz dzisiejsze dane i zapisz w cache.
+    final today = DateTime.now();
+    widget.stepRepository.getStepsForDate(today).then((value) {
+      if (!mounted) return;
+      setState(() {
+        _cachedTodaySteps = value;
+      });
+    });
+    widget.stepRepository.getHourlyStepsForDate(today).then((value) {
+      if (!mounted) return;
+      setState(() {
+        _cachedTodayHourly = value;
+      });
+    });
+
   }
 
     
-  int _mockStepsFor(DateTime day) {
-    final d = _truncate(day);
-    final seed = d.millisecondsSinceEpoch ~/ (24 * 3600 * 1000);   
-    final base = (seed % 7000) + 1500;   
-    return base;
-  }
+  // int _mockStepsFor(DateTime day) {
+  //   final d = _truncate(day);
+  //   final seed = d.millisecondsSinceEpoch ~/ (24 * 3600 * 1000);   
+  //   final base = (seed % 7000) + 1500;   
+  //   return base;
+  // }
 
 
   @override
@@ -125,7 +164,7 @@ class _DashboardPageState extends State<DashboardPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-         
+
         
         Padding(
           padding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
@@ -172,34 +211,112 @@ class _DashboardPageState extends State<DashboardPage> {
             onPageChanged: (i) => setState(() => _current = _dateFromIndex(i)),
             itemBuilder: (context, index) {
               final date = _dateFromIndex(index);
-                
-              final steps = _mockStepsFor(date);
-              final goal = _goal; 
-              final progress = (steps / goal).clamp(0.0, 1.0);
-              return ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  _StepsCard(
-                    date: date,
-                    steps: steps,
-                    goal: goal,
-                    progress: progress,
-                    onEditGoal: _editGoal,   
-                  ),
-                  const SizedBox(height: 12),
-                  _HourlyChart(data: _mockHourlyFor(date)),
-                  const SizedBox(height: 12),
-                  _MetricsCard(
-                    durationHm: _formatHm(_durationMinutes(steps)),
-                    distanceKm: _distanceKm(steps),
-                    caloriesKcal: _caloriesKcal(steps),
-                  ),
-                  const SizedBox(height: 12),
-                ],
+              final today = DateTime.now();
+              final isToday = _isSameDate(date, today);
+
+              if (isToday) {
+                // today - live update
+                return StreamBuilder<int>(
+                  stream: widget.stepRepository.watchTodaySteps(),
+                  builder: (context, stepsSnapshot) {
+                    if (stepsSnapshot.hasData) {
+                      _cachedTodaySteps = stepsSnapshot.data;
+                    }
+                    final steps = _cachedTodaySteps ?? stepsSnapshot.data ?? 0;
+                    final goal = _goal;
+                    final progress = goal > 0
+                        ? (steps / goal).clamp(0.0, 1.0)
+                        : 0.0;
+
+                    return FutureBuilder<List<int>>(
+                      future: widget.stepRepository
+                          .getHourlyStepsForDate(date),
+                      builder: (context, hourlySnapshot) {
+                        if (hourlySnapshot.hasData) {
+                            _cachedTodayHourly = hourlySnapshot.data;
+                        }
+
+                        final hourlyData =
+                           _cachedTodayHourly ??
+                            hourlySnapshot.data ??
+                            const <int>[];
+
+                        return ListView(
+                          padding: const EdgeInsets.all(16),
+                          children: [
+                            _StepsCard(
+                              date: date,
+                              steps: steps,
+                              goal: goal,
+                              progress: progress,
+                              onEditGoal: _editGoal,
+                            ),
+                            const SizedBox(height: 12),
+                            _HourlyChart(
+                              data: hourlyData,
+                            ),
+                            const SizedBox(height: 12),
+                            _MetricsCard(
+                              durationHm: _formatHm(_durationMinutes(steps)),
+                              distanceKm: _distanceKm(steps),
+                              caloriesKcal: _caloriesKcal(steps),
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                        );
+                      },
+                    );
+                  },
+                );
+              }
+
+              // other days - one time download
+              return FutureBuilder<int>(
+                future: widget.stepRepository.getStepsForDate(date),
+                builder: (context, stepsSnapshot) {
+                  final steps = stepsSnapshot.data ?? 0;
+                  final goal = _goal;
+                  final progress = goal > 0
+                      ? (steps / goal).clamp(0.0, 1.0)
+                      : 0.0;
+
+                  return FutureBuilder<List<int>>(
+                    future: widget.stepRepository
+                        .getHourlyStepsForDate(date),
+                    builder: (context, hourlySnapshot) {
+                      final hourlyData =
+                          hourlySnapshot.data ?? const <int>[];
+
+                      return ListView(
+                        padding: const EdgeInsets.all(16),
+                        children: [
+                          _StepsCard(
+                            date: date,
+                            steps: steps,
+                            goal: goal,
+                            progress: progress,
+                            onEditGoal: _editGoal,
+                          ),
+                          const SizedBox(height: 12),
+                          _HourlyChart(
+                            data: hourlyData,
+                          ),
+                          const SizedBox(height: 12),
+                          _MetricsCard(
+                            durationHm: _formatHm(_durationMinutes(steps)),
+                            distanceKm: _distanceKm(steps),
+                            caloriesKcal: _caloriesKcal(steps),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                      );
+                    },
+                  );
+                },
               );
             },
           ),
-        ),
+        ),     
       ],
     );
   }
@@ -347,13 +464,18 @@ class _HourlyChart extends StatelessWidget {
     final int maxData =
         data.isEmpty ? 0 : data.reduce((a, b) => a > b ? a : b);
 
+    // base maximym
     final double baseMax = maxData == 0 ? 1000 : maxData.toDouble();
 
     final double rawStep = baseMax / 4.0;
 
-    final int stepHundreds = ((rawStep + 99) ~/ 100) * 100;
-    final double yStep = stepHundreds.toDouble();
+    int stepHundreds = ((rawStep + 99) ~/ 100) * 100;
 
+    if (stepHundreds == 0) {
+      stepHundreds = 100;
+    }
+
+    final double yStep = stepHundreds.toDouble();
     final double tickMaxY = yStep * 4;
 
     String formatHour(int h) => h.toString().padLeft(2, '0');
@@ -513,7 +635,7 @@ class _GoalEditSheetState extends State<_GoalEditSheet> {
             value: sliderValue,
             min: 500,
             max: 20000,
-            divisions: (20000 - 500) ~/ 500, // krok 500
+            divisions: (20000 - 500) ~/ 500, // step = 500
             label: '${sliderValue.round()}',
             onChanged: (v) => setState(() => tmp = v.round()),
           ),
