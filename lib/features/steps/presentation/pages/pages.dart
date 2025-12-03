@@ -322,13 +322,78 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 }
 
-class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key});
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({
+    super.key,
+    required this.stepRepository,
+  });
+
+  final StepCounterRepository stepRepository;
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  bool? _trackingEnabled;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final enabled = await widget.stepRepository.isTrackingEnabled();
+    if (!mounted) return;
+    setState(() {
+      _trackingEnabled = enabled;
+    });
+  }
+
+  Future<void> _onChanged(bool value) async {
+    if (_busy) return;
+    setState(() {
+      _trackingEnabled = value;
+      _busy = true;
+    });
+    try {
+      await widget.stepRepository.setTrackingEnabled(value);
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return const Center(child: Text('Ustawienia'));
+    final trackingEnabled = _trackingEnabled;
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        SwitchListTile(
+          title: const Text('Śledzenie kroków w tle'),
+          subtitle: Text(
+            trackingEnabled == true
+                ? 'Śledzenie kroków jest włączone.'
+                : 'Śledzenie kroków jest wyłączone.',
+          ),
+          value: trackingEnabled ?? false,
+          onChanged: (trackingEnabled == null || _busy) ? null : _onChanged,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Gdy funkcja jest wyłączona, kroki nie są zliczane, a serwis nie '
+          'wznowi pracy samoczynnie po restarcie telefonu.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
+    );
   }
 }
+
 
 class _StepsCard extends StatelessWidget {
   const _StepsCard({

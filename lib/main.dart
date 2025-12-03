@@ -96,7 +96,7 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final pages = [
       DashboardPage(stepRepository: _stepRepository),
-      const SettingsPage(),
+      SettingsPage(stepRepository: _stepRepository),
     ];
     return Scaffold(
       appBar: AppBar(
