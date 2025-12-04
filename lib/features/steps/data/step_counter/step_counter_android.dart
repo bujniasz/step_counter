@@ -153,4 +153,26 @@ class AndroidStepCounterRepository implements StepCounterRepository {
     return _stepsController.stream;
   }
 
+  @override
+  Future<bool> isTrackingEnabled() async {
+    try {
+      final result =
+          await _methodChannel.invokeMethod<bool>('isTrackingEnabled');
+      return result ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  @override
+  Future<void> setTrackingEnabled(bool enabled) async {
+    try {
+      if (enabled) {
+        await _methodChannel.invokeMethod('startTrackingService');
+      } else {
+        await _methodChannel.invokeMethod('stopTrackingService');
+      }
+    } catch (_) {
+    }
+  }
 }

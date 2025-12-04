@@ -5,6 +5,10 @@ abstract class StepCounterRepository {
   Future<List<int>> getHourlyStepsForDate(DateTime date);
 
   Stream<int> watchTodaySteps();
+
+  Future<bool> isTrackingEnabled();
+
+  Future<void> setTrackingEnabled(bool enabled);
 }
 
 
@@ -43,5 +47,16 @@ class MockStepCounterRepository implements StepCounterRepository {
   @override
   Stream<int> watchTodaySteps() async* {
     yield _stepsForDateSync(DateTime.now());
+  }
+
+  @override
+  Future<bool> isTrackingEnabled() async {
+    // Mock
+    return true;
+  }
+
+  @override
+  Future<void> setTrackingEnabled(bool enabled) async {
+    // Mock
   }
 }

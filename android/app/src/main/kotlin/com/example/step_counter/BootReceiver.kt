@@ -29,6 +29,18 @@ class BootReceiver : BroadcastReceiver() {
 
             if (!hasPermission) return
 
+            val prefs = context.getSharedPreferences(
+                StepTrackingService.PREFS_NAME,
+                Context.MODE_PRIVATE
+            )
+            val trackingEnabled = prefs.getBoolean(
+                StepTrackingService.KEY_TRACKING_ENABLED,
+                true
+            )
+            if (!trackingEnabled) {
+                return
+            }
+
             val serviceIntent = Intent(context, StepTrackingService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(serviceIntent)
