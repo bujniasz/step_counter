@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../data/goal_store.dart';
+import '../../data/body_params_store.dart';
 import '../../data/step_counter/step_counter_repository.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/services.dart';
@@ -31,6 +32,8 @@ class _DashboardPageState extends State<DashboardPage> {
   int? _cachedTodaySteps;
   List<int>? _cachedTodayHourly;
 
+  late BodyParamsSettings _bodySettings;
+
   static DateTime _truncate(DateTime d) => DateTime(d.year, d.month, d.day);
 
   bool _isSameDate(DateTime a, DateTime b) {
@@ -40,17 +43,21 @@ class _DashboardPageState extends State<DashboardPage> {
   DateTime _shiftDay(DateTime d, int offset) => DateTime(d.year, d.month, d.day + offset);
   int _indexFor(DateTime day) => _center + day.difference(_truncate(_today)).inDays;
 
-  // assumption
-  static const double _strideMeters = 0.78;
+  // assumptions
   static const double _cadenceSpm = 100;
-  static const double _weightKg = 70;
   static const double _metWalking = 3.5;
 
   int _durationMinutes(int steps) => (steps / _cadenceSpm).round();
-  double _distanceKm(int steps) => (steps * _strideMeters) / 1000.0;
+
+  double _distanceKm(int steps) {
+    final stride = BodyParamsStore.effectiveStrideMeters(_bodySettings);
+    return (steps * stride) / 1000.0;
+  }
+
   int _caloriesKcal(int steps) {
     final hours = _durationMinutes(steps) / 60.0;
-    return (_metWalking * _weightKg * hours).round();
+    final weight = BodyParamsStore.effectiveWeightKg(_bodySettings);
+    return (_metWalking * weight * hours).round();
   }
 
   String _formatHm(int minutes) {
@@ -121,13 +128,14 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void initState() {
     super.initState();
-      
+
+    _bodySettings = BodyParamsStore.settingsNotifier.value;
+    BodyParamsStore.settingsNotifier.addListener(_onBodySettingsChanged);
+
     GoalStore.getGoal().then((v) => setState(() => _goal = v));
 
-    // Android 10+ wymaga runtime permission do liczenia kroków.
+    // Android 10+ req
     if (!kIsWeb && Platform.isAndroid) {
-      // Nie czekamy na wynik – dialog systemowy i tak wyskoczy,
-      // a repozytorium zacznie liczyć kroki po przyznaniu uprawnienia.
       ensureActivityRecognitionPermission();
     }
 
@@ -148,6 +156,11 @@ class _DashboardPageState extends State<DashboardPage> {
 
   }
 
+  void _onBodySettingsChanged() {
+    setState(() {
+      _bodySettings = BodyParamsStore.settingsNotifier.value;
+    });
+  }
     
   // int _mockStepsFor(DateTime day) {
   //   final d = _truncate(day);
@@ -156,6 +169,12 @@ class _DashboardPageState extends State<DashboardPage> {
   //   return base;
   // }
 
+  @override
+  void dispose() {
+    BodyParamsStore.settingsNotifier.removeListener(_onBodySettingsChanged);
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -336,15 +355,26 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   bool? _trackingEnabled;
-  bool _busy = false;
+  bool _trackingBusy = false;
+
+  late BodyParamsSettings _settings;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _loadTracking();
+
+    _settings = BodyParamsStore.settingsNotifier.value;
+    BodyParamsStore.settingsNotifier.addListener(_onExternalSettingsChanged);
   }
 
-  Future<void> _load() async {
+  @override
+  void dispose() {
+    BodyParamsStore.settingsNotifier.removeListener(_onExternalSettingsChanged);
+    super.dispose();
+  }
+
+  Future<void> _loadTracking() async {
     final enabled = await widget.stepRepository.isTrackingEnabled();
     if (!mounted) return;
     setState(() {
@@ -352,47 +382,484 @@ class _SettingsPageState extends State<SettingsPage> {
     });
   }
 
-  Future<void> _onChanged(bool value) async {
-    if (_busy) return;
+  Future<void> _onTrackingChanged(bool value) async {
+    if (_trackingBusy) return;
     setState(() {
       _trackingEnabled = value;
-      _busy = true;
+      _trackingBusy = true;
     });
     try {
       await widget.stepRepository.setTrackingEnabled(value);
     } finally {
       if (mounted) {
-        setState(() => _busy = false);
+        setState(() => _trackingBusy = false);
       }
+    }
+  }
+
+  void _onExternalSettingsChanged() {
+    setState(() {
+      _settings = BodyParamsStore.settingsNotifier.value;
+    });
+  }
+
+  String _strideSummary(BodyParamsSettings s) {
+    final stride = BodyParamsStore.effectiveStrideMeters(s);
+    switch (s.strideSource) {
+      case StrideSource.systemDefault:
+        return 'Domyślna długość kroku (0.78 m)';
+      case StrideSource.manual:
+        return 'Własna długość kroku (${stride.toStringAsFixed(2)} m)';
+      case StrideSource.fromHeight:
+        final base = 'Z wzrostu i płci (${stride.toStringAsFixed(2)} m)';
+        if (s.heightCm != null && s.gender != null) {
+          final genderText =
+              s.gender == Gender.female ? 'kobieta' : 'mężczyzna';
+          return '$base – $genderText, ${s.heightCm} cm';
+        }
+        return base;
+    }
+  }
+
+  String _weightSummary(BodyParamsSettings s) {
+    final weight = BodyParamsStore.effectiveWeightKg(s);
+    switch (s.weightSource) {
+      case WeightSource.systemDefault:
+        return 'Domyślna waga (70 kg)';
+      case WeightSource.manual:
+        return 'Własna waga (${weight.toStringAsFixed(1)} kg)';
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final trackingEnabled = _trackingEnabled;
+
+    const sectionSpacing = SizedBox(height: 24);
+    const tileSpacing = SizedBox(height: 4);
+
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       children: [
-        SwitchListTile(
-          title: const Text('Śledzenie kroków w tle'),
-          subtitle: Text(
-            trackingEnabled == true
-                ? 'Śledzenie kroków jest włączone.'
-                : 'Śledzenie kroków jest wyłączone.',
+        //
+        // ─────────────────────────────────────────
+        // SEKCJA 1 — ŚLEDZENIE KROKÓW
+        // ─────────────────────────────────────────
+        Text(
+          'Ogólne',
+          style: theme.textTheme.titleMedium!.copyWith(
+            fontWeight: FontWeight.w600,
+            color: theme.colorScheme.primary,
           ),
-          value: trackingEnabled ?? false,
-          onChanged: (trackingEnabled == null || _busy) ? null : _onChanged,
         ),
+        tileSpacing,
+        Material(
+          color: Colors.transparent,
+          child: SwitchListTile(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            title: Text(
+              'Śledzenie kroków w tle',
+              style: theme.textTheme.bodyLarge!.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            subtitle: Text(
+              trackingEnabled == true
+                  ? 'Śledzenie kroków jest włączone.'
+                  : 'Śledzenie kroków jest wyłączone.',
+              style: theme.textTheme.bodySmall,
+            ),
+            value: trackingEnabled ?? false,
+            onChanged: (trackingEnabled == null || _trackingBusy)
+                ? null
+                : _onTrackingChanged,
+          ),
+        ),
+
         const SizedBox(height: 8),
         Text(
           'Gdy funkcja jest wyłączona, kroki nie są zliczane, a serwis nie '
-          'wznowi pracy samoczynnie po restarcie telefonu.',
-          style: Theme.of(context).textTheme.bodySmall,
+          'wznowi pracy automatycznie po restarcie telefonu.',
+          style: theme.textTheme.bodySmall!.copyWith(
+            color: theme.colorScheme.onSurface.withOpacity(0.65),
+          ),
         ),
+
+        sectionSpacing,
+        Divider(height: 1, thickness: 1, color: theme.dividerColor.withOpacity(0.4)),
+        sectionSpacing,
+
+        //
+        // ─────────────────────────────────────────
+        // SEKCJA 2 — DYSTANS
+        // ─────────────────────────────────────────
+        Text(
+          'Dystans',
+          style: theme.textTheme.titleMedium!.copyWith(
+            fontWeight: FontWeight.w600,
+            color: theme.colorScheme.primary,
+          ),
+        ),
+        tileSpacing,
+        _SettingsEntryTile(
+          title: 'Dostosuj długość kroku',
+          subtitle: _strideSummary(_settings),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const StrideSettingsPage(),
+              ),
+            );
+          },
+        ),
+
+        sectionSpacing,
+        Divider(height: 1, thickness: 1, color: theme.dividerColor.withOpacity(0.4)),
+        sectionSpacing,
+
+        //
+        // ─────────────────────────────────────────
+        // SEKCJA 3 — KALORIE
+        // ─────────────────────────────────────────
+        Text(
+          'Kalorie',
+          style: theme.textTheme.titleMedium!.copyWith(
+            fontWeight: FontWeight.w600,
+            color: theme.colorScheme.primary,
+          ),
+        ),
+        tileSpacing,
+        _SettingsEntryTile(
+          title: 'Dostosuj spalane kalorie',
+          subtitle: _weightSummary(_settings),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const WeightSettingsPage(),
+              ),
+            );
+          },
+        ),
+
+        const SizedBox(height: 40),
       ],
     );
   }
 }
+
+class StrideSettingsPage extends StatefulWidget {
+  const StrideSettingsPage({super.key});
+
+  @override
+  State<StrideSettingsPage> createState() => _StrideSettingsPageState();
+}
+
+class _StrideSettingsPageState extends State<StrideSettingsPage> {
+  late BodyParamsSettings _settings;
+  late final TextEditingController _heightController;
+  late final TextEditingController _strideController;
+
+  @override
+  void initState() {
+    super.initState();
+    _settings = BodyParamsStore.settingsNotifier.value;
+
+    _heightController = TextEditingController(
+      text: _settings.heightCm?.toString() ?? '',
+    );
+    _strideController = TextEditingController(
+      text: _settings.manualStrideMeters?.toStringAsFixed(2) ?? '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _heightController.dispose();
+    _strideController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _updateSettings(BodyParamsSettings newSettings) async {
+    setState(() {
+      _settings = newSettings;
+    });
+    await BodyParamsStore.save(newSettings);
+  }
+
+  double? _parseDouble(String value) {
+    final normalized = value.replaceAll(',', '.');
+    return double.tryParse(normalized);
+  }
+
+  int? _parseInt(String value) {
+    final digitsOnly = value.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digitsOnly.isEmpty) return null;
+    return int.tryParse(digitsOnly);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Długość kroku'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(
+            'Dystans (długość kroku)',
+            style: theme.textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          RadioListTile<StrideSource>(
+            value: StrideSource.systemDefault,
+            groupValue: _settings.strideSource,
+            onChanged: (value) {
+              if (value == null) return;
+              _updateSettings(
+                _settings.copyWith(strideSource: value),
+              );
+            },
+            title: const Text('Domyślna długość kroku'),
+            subtitle: const Text('Użyj wartości 0.78 m'),
+          ),
+          RadioListTile<StrideSource>(
+            value: StrideSource.manual,
+            groupValue: _settings.strideSource,
+            onChanged: (value) {
+              if (value == null) return;
+              _updateSettings(
+                _settings.copyWith(strideSource: value),
+              );
+            },
+            title: const Text('Własna długość kroku'),
+            subtitle: const Text('Podaj długość kroku w metrach'),
+          ),
+          if (_settings.strideSource == StrideSource.manual) ...[
+            const SizedBox(height: 8),
+            TextField(
+              controller: _strideController,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Długość kroku [m] (max. 2)',
+                hintText: 'np. 0.78',
+              ),
+              onChanged: (value) {
+                double? d = _parseDouble(value);
+
+                if (d != null) {
+                  // Zakres 0–2
+                  if (d < 0) d = 0;
+                  if (d > 2) d = 2;
+                  // Maks 2 miejsca po przecinku
+                  d = double.parse(d.toStringAsFixed(2));
+                }
+
+                _updateSettings(
+                  _settings.copyWith(
+                    manualStrideMeters: d,
+                    clearManualStride: value.trim().isEmpty,
+                  ),
+                );
+              },
+            ),
+          ],
+          RadioListTile<StrideSource>(
+            value: StrideSource.fromHeight,
+            groupValue: _settings.strideSource,
+            onChanged: (value) {
+              if (value == null) return;
+              _updateSettings(
+                _settings.copyWith(strideSource: value),
+              );
+            },
+            title: const Text('Wylicz z wzrostu i płci'),
+            subtitle: const Text(
+              'kobieta: 0.413 × wzrost\nmężczyzna: 0.415 × wzrost',
+            ),
+          ),
+          if (_settings.strideSource == StrideSource.fromHeight) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Płeć',
+              style: theme.textTheme.bodyMedium,
+            ),
+            Row(
+              children: [
+                ChoiceChip(
+                  label: const Text('Kobieta'),
+                  selected: _settings.gender == Gender.female,
+                  onSelected: (_) {
+                    _updateSettings(
+                      _settings.copyWith(gender: Gender.female),
+                    );
+                  },
+                ),
+                const SizedBox(width: 8),
+                ChoiceChip(
+                  label: const Text('Mężczyzna'),
+                  selected: _settings.gender == Gender.male,
+                  onSelected: (_) {
+                    _updateSettings(
+                      _settings.copyWith(gender: Gender.male),
+                    );
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _heightController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Wzrost [cm] (max. 300)',
+                hintText: 'np. 175',
+              ),
+              onChanged: (value) {
+                int? h = _parseInt(value);
+
+                if (h != null) {
+                  if (h < 0) h = 0;
+                  if (h > 300) h = 300;
+                }
+
+                _updateSettings(
+                  _settings.copyWith(
+                    heightCm: h,
+                    clearHeight: value.trim().isEmpty,
+                  ),
+                );
+              },
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+
+class WeightSettingsPage extends StatefulWidget {
+  const WeightSettingsPage({super.key});
+
+  @override
+  State<WeightSettingsPage> createState() => _WeightSettingsPageState();
+}
+
+class _WeightSettingsPageState extends State<WeightSettingsPage> {
+  late BodyParamsSettings _settings;
+  late final TextEditingController _weightController;
+
+  @override
+  void initState() {
+    super.initState();
+    _settings = BodyParamsStore.settingsNotifier.value;
+
+    _weightController = TextEditingController(
+      text: _settings.manualWeightKg?.toStringAsFixed(1) ?? '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _weightController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _updateSettings(BodyParamsSettings newSettings) async {
+    setState(() {
+      _settings = newSettings;
+    });
+    await BodyParamsStore.save(newSettings);
+  }
+
+  double? _parseDouble(String value) {
+    final normalized = value.replaceAll(',', '.');
+    return double.tryParse(normalized);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Spalane kalorie'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(
+            'Kalorie (waga)',
+            style: theme.textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          RadioListTile<WeightSource>(
+            value: WeightSource.systemDefault,
+            groupValue: _settings.weightSource,
+            onChanged: (value) {
+              if (value == null) return;
+              _updateSettings(
+                _settings.copyWith(weightSource: value),
+              );
+            },
+            title: const Text('Domyślna waga'),
+            subtitle: const Text('Użyj wartości 70 kg'),
+          ),
+          RadioListTile<WeightSource>(
+            value: WeightSource.manual,
+            groupValue: _settings.weightSource,
+            onChanged: (value) {
+              if (value == null) return;
+              _updateSettings(
+                _settings.copyWith(weightSource: value),
+              );
+            },
+            title: const Text('Własna waga'),
+            subtitle: const Text('Podaj swoją wagę w kilogramach'),
+          ),
+          if (_settings.weightSource == WeightSource.manual) ...[
+            const SizedBox(height: 8),
+            TextField(
+              controller: _weightController,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Waga [kg] (max. 300)',
+                hintText: 'np. 70',
+              ),
+              onChanged: (value) {
+                double? w = _parseDouble(value);
+
+                if (w != null) {
+                  // Zakres 0–300
+                  if (w < 0) w = 0;
+                  if (w > 300) w = 300;
+                  // Maks 2 miejsca po przecinku
+                  w = double.parse(w.toStringAsFixed(2));
+                }
+
+                _updateSettings(
+                  _settings.copyWith(
+                    manualWeightKg: w,
+                    clearManualWeight: value.trim().isEmpty,
+                  ),
+                );
+              },
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 
 
 class _StepsCard extends StatelessWidget {
@@ -737,6 +1204,61 @@ class _GoalEditSheetState extends State<_GoalEditSheet> {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+
+class _SettingsEntryTile extends StatelessWidget {
+  const _SettingsEntryTile({
+    required this.title,
+    required this.subtitle,
+    this.onTap,
+  });
+
+  final String title;
+  final String subtitle;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 14.0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: theme.textTheme.bodyLarge!.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: theme.textTheme.bodySmall!.copyWith(
+                        color: theme.colorScheme.onSurface.withOpacity(0.7),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
+        ),
       ),
     );
   }
