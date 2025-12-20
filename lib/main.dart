@@ -3,16 +3,20 @@ import 'core/theme/app_theme.dart';
 import 'features/steps/presentation/pages/pages.dart';
 import 'features/steps/data/step_counter/step_counter_repository.dart';
 import 'features/steps/data/step_counter/step_counter_android.dart';
+import 'features/steps/data/body_params_store.dart';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'features/steps/data/goal_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   Intl.defaultLocale = 'pl_PL';
   await initializeDateFormatting('pl_PL', null);
+  await GoalStore.syncCurrentGoalToNative();
+  await BodyParamsStore.load();
   runApp(const StepCounterApp());
 }
 
@@ -96,7 +100,7 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final pages = [
       DashboardPage(stepRepository: _stepRepository),
-      const SettingsPage(),
+      SettingsPage(stepRepository: _stepRepository),
     ];
     return Scaffold(
       appBar: AppBar(
@@ -118,7 +122,7 @@ class _HomeShellState extends State<HomeShell> {
         currentIndex: _index,
         onTap: (i) => setState(() => _index = i),
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.directions_walk), label: 'Dziś'),
+          BottomNavigationBarItem(icon: Icon(Icons.directions_walk), label: 'Kroki'),
           BottomNavigationBarItem(icon: Icon(Icons.settings), label: 'Ustawienia'),
         ],
       ),

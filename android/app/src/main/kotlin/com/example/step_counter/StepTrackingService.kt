@@ -27,10 +27,11 @@ class StepTrackingService : Service(), SensorEventListener {
 
     companion object {
         private const val TAG = "StepTrackingService"
-        private const val CHANNEL_ID = "step_tracking_channel"
+        const val CHANNEL_ID = "step_tracking_channel"
         private const val NOTIFICATION_ID = 1
 
-        private const val PREFS_NAME = "step_counter_prefs"
+        const val PREFS_NAME = "step_counter_prefs"
+        const val KEY_TRACKING_ENABLED = "tracking_enabled"
 
         // Surowa wartość z TYPE_STEP_COUNTER z ostatniego zdarzenia
         private const val KEY_LAST_SENSOR_VALUE = "last_sensor_value"
@@ -38,6 +39,14 @@ class StepTrackingService : Service(), SensorEventListener {
         // Historia: suma kroków i biny godzinowe dla każdej daty
         private const val KEY_DAY_TOTAL_PREFIX = "day_total_"      // + dateKey
         private const val KEY_DAY_HOURLY_PREFIX = "day_hour_"      // + dateKey + "_<hour>"
+
+        private const val KEY_DAILY_GOAL_STEPS = "daily_goal_steps"
+        private const val KEY_GOAL_LAST_NOTIFIED_DATE = "goal_last_notified_date"
+        const val KEY_GOAL_NOTIFICATION_ENABLED = "goal_notification_enabled"
+
+        private const val DEFAULT_GOAL_STEPS = 8000
+
+        private const val KEY_GOAL_ACHIEVED_PREFIX = "goal_achieved_" // + dateKey
 
         const val ACTION_STEPS_UPDATED =
             "com.example.step_counter.STEPS_UPDATED"
@@ -48,6 +57,96 @@ class StepTrackingService : Service(), SensorEventListener {
     private var stepCounterSensor: Sensor? = null
     private lateinit var prefs: SharedPreferences
 
+    private fun isTrackingEnabled(): Boolean {
+        return prefs.getBoolean(KEY_TRACKING_ENABLED, true)
+    }
+
+    private fun getDailyGoalSteps(): Int {
+        return prefs.getInt(KEY_DAILY_GOAL_STEPS, DEFAULT_GOAL_STEPS)
+    }
+
+    private fun isGoalNotificationEnabled(): Boolean {
+        // Domyślnie: powiadomienie włączone
+        return prefs.getBoolean(KEY_GOAL_NOTIFICATION_ENABLED, true)
+    }
+
+    private fun hasSentGoalNotificationFor(dateKey: String): Boolean {
+        val last = prefs.getString(KEY_GOAL_LAST_NOTIFIED_DATE, null)
+        return last == dateKey
+    }
+
+    private fun markGoalNotificationSent(dateKey: String) {
+        prefs.edit()
+            .putString(KEY_GOAL_LAST_NOTIFIED_DATE, dateKey)
+            .apply()
+    }
+
+    private fun checkAndNotifyGoalReached(todaySteps: Int) {
+        if (!isGoalNotificationEnabled()) return
+
+        val goal = getDailyGoalSteps()
+        if (goal <= 0) return
+        if (todaySteps < goal) return
+
+        val dateKey = currentDayKey()
+        if (hasSentGoalNotificationFor(dateKey)) return
+
+        // Zbuduj treść powiadomienia
+        val prettyDate = try {
+            // dateKey ma format YYYY-MM-DD (jak w currentDateKey)
+            val localDate = LocalDate.parse(dateKey, DateTimeFormatter.ISO_LOCAL_DATE)
+            localDate.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))
+        } catch (e: Exception) {
+            dateKey
+        }
+
+        val title = "Dzisiejszy cel osiągnięty"
+        val text = "Dzisiejszy cel ($prettyDate – $goal kroków) osiągnięty. Gratulacje!"
+
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        // Kanał już istnieje (ten sam co dla foreground), ale na wszelki wypadek
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Śledzenie kroków",
+                NotificationManager.IMPORTANCE_DEFAULT
+            )
+            manager.createNotificationChannel(channel)
+        }
+
+        val openIntent = Intent(this, MainActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            1001,
+            openIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setOngoing(false)
+            .build()
+
+        // Używamy innego ID niż foreground serwisu
+        manager.notify(1001, notification)
+
+        markGoalNotificationSent(dateKey)
+
+        markDailyGoalAchieved(dateKey, goal)
+    }
+
+    private fun markDailyGoalAchieved(dateKey: String, goal: Int) {
+        prefs.edit()
+            .putInt("$KEY_GOAL_ACHIEVED_PREFIX$dateKey", goal)
+            .apply()
+    }
+
+
     override fun onCreate() {
         super.onCreate()
 
@@ -56,10 +155,24 @@ class StepTrackingService : Service(), SensorEventListener {
         stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
 
         createNotificationChannel()
-        registerStepListener()
+        if (isTrackingEnabled()) {
+            registerStepListener()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!hasActivityRecognitionPermission()) {
+            Log.w(TAG, "No ACTIVITY_RECOGNITION permission, stopping service")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (!isTrackingEnabled()) {
+            Log.i(TAG, "Tracking disabled flag set, stopping service")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         val notification = buildNotification()
         startForeground(NOTIFICATION_ID, notification)
         registerStepListener()
@@ -125,7 +238,6 @@ class StepTrackingService : Service(), SensorEventListener {
         val lastRaw = prefs.getFloat(KEY_LAST_SENSOR_VALUE, -1f)
 
         if (lastRaw < 0f) {
-            // Pierwsze znane zdarzenie – ustaw bazę i nic nie dodawaj
             editor.putFloat(KEY_LAST_SENSOR_VALUE, rawValue)
             editor.apply()
             return
@@ -145,23 +257,21 @@ class StepTrackingService : Service(), SensorEventListener {
         val dateKey = currentDayKey()
         val totalKey = "$KEY_DAY_TOTAL_PREFIX$dateKey"
 
-        // Zaktualizuj sumę dla bieżącego dnia
         val currentTotal = prefs.getInt(totalKey, 0)
         val newTotal = currentTotal + deltaInt
         editor.putInt(totalKey, newTotal)
 
-        // Zaktualizuj bin godzinowy (0–23) dla bieżącego dnia
         val cal = Calendar.getInstance()
         val hour = cal.get(Calendar.HOUR_OF_DAY)
         val hourKey = "${KEY_DAY_HOURLY_PREFIX}${dateKey}_$hour"
         val hourValue = prefs.getInt(hourKey, 0)
         editor.putInt(hourKey, hourValue + deltaInt)
 
-        // Zaktualizuj surową wartość sensora
         editor.putFloat(KEY_LAST_SENSOR_VALUE, rawValue)
         editor.apply()
 
-        // Powiadom Flutter o nowej liczbie kroków dla dzisiaj
+        checkAndNotifyGoalReached(newTotal)
+
         val broadcast = Intent(ACTION_STEPS_UPDATED)
         broadcast.putExtra(EXTRA_TODAY_STEPS, newTotal)
         sendBroadcast(broadcast)

@@ -5,6 +5,14 @@ abstract class StepCounterRepository {
   Future<List<int>> getHourlyStepsForDate(DateTime date);
 
   Stream<int> watchTodaySteps();
+
+  Future<bool> isTrackingEnabled();
+
+  Future<int?> getAchievedGoalForDate(DateTime date);
+
+  Future<int> getGoalStreakUntil(DateTime date);
+
+  Future<void> setTrackingEnabled(bool enabled);
 }
 
 
@@ -43,5 +51,37 @@ class MockStepCounterRepository implements StepCounterRepository {
   @override
   Stream<int> watchTodaySteps() async* {
     yield _stepsForDateSync(DateTime.now());
+  }
+
+  @override
+  Future<bool> isTrackingEnabled() async {
+    // Mock
+    return true;
+  }
+
+  @override
+  Future<void> setTrackingEnabled(bool enabled) async {
+    // Mock
+  }
+
+  @override
+  Future<int?> getAchievedGoalForDate(DateTime day) async {
+    // Proste: uznaj, że celem jest 8000 i jeśli mockowane kroki >= 8000, to cel spełniony.
+    final steps = _stepsForDateSync(_truncate(day));
+    const goal = 8000;
+    return steps >= goal ? goal : null;
+  }
+
+  @override
+  Future<int> getGoalStreakUntil(DateTime day) async {
+    var streak = 0;
+    var current = _truncate(day);
+    while (true) {
+      final achieved = await getAchievedGoalForDate(current);
+      if (achieved == null) break;
+      streak++;
+      current = current.subtract(const Duration(days: 1));
+    }
+    return streak;
   }
 }

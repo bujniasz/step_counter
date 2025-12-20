@@ -12,7 +12,6 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        // Inicjalizacja naszego kanału kroków
         stepCounterChannel = StepCounterChannel(
             context = this,
             binaryMessenger = flutterEngine.dartExecutor.binaryMessenger,
