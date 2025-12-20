@@ -175,4 +175,39 @@ class AndroidStepCounterRepository implements StepCounterRepository {
     } catch (_) {
     }
   }
+
+  @override
+  Future<int?> getAchievedGoalForDate(DateTime date) async {
+    if (kIsWeb) return null;
+    final dateKey = _dateKey(date);
+    try {
+      final result = await _methodChannel.invokeMethod<int>(
+        'getAchievedGoalForDate',
+        dateKey,
+      );
+      if (result == null || result <= 0) return null;
+      return result;
+    } catch (e) {
+      if (kDebugMode) {
+        print('getAchievedGoalForDate error: $e');
+      }
+      return null;
+    }
+  }
+
+  @override
+  Future<int> getGoalStreakUntil(DateTime date) async {
+    var streak = 0;
+    var current = DateTime(date.year, date.month, date.day);
+
+    while (true) {
+      final achieved = await getAchievedGoalForDate(current);
+      if (achieved == null) break;
+      streak++;
+      current = current.subtract(const Duration(days: 1));
+    }
+
+    return streak;
+  }
+
 }

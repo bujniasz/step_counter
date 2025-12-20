@@ -9,11 +9,13 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'features/steps/data/goal_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   Intl.defaultLocale = 'pl_PL';
   await initializeDateFormatting('pl_PL', null);
+  await GoalStore.syncCurrentGoalToNative();
   await BodyParamsStore.load();
   runApp(const StepCounterApp());
 }

@@ -30,10 +30,31 @@ class StepCounterChannel(
 
         private const val KEY_DAY_TOTAL_PREFIX = "day_total_"      // + dateKey
         private const val KEY_DAY_HOURLY_PREFIX = "day_hour_"      // + dateKey + "_<hour>"
+
+        private const val KEY_DAILY_GOAL_STEPS = "daily_goal_steps"
+        private const val KEY_GOAL_NOTIFICATION_ENABLED = "goal_notification_enabled"
+
+        private const val KEY_GOAL_ACHIEVED_PREFIX = "goal_achieved_"
     }
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences(StepTrackingService.PREFS_NAME, Context.MODE_PRIVATE)
+
+    private fun setDailyGoal(steps: Int) {
+        prefs.edit()
+            .putInt(KEY_DAILY_GOAL_STEPS, steps)
+            .apply()
+    }
+
+    private fun isGoalNotificationEnabled(): Boolean {
+        return prefs.getBoolean(KEY_GOAL_NOTIFICATION_ENABLED, true)
+    }
+
+    private fun setGoalNotificationEnabled(enabled: Boolean) {
+        prefs.edit()
+            .putBoolean(KEY_GOAL_NOTIFICATION_ENABLED, enabled)
+            .apply()
+    }
 
     private val methodChannel =
         MethodChannel(binaryMessenger, METHOD_CHANNEL_NAME)
@@ -120,6 +141,40 @@ class StepCounterChannel(
         when (call.method) {
             "isTrackingEnabled" -> {
                 result.success(isTrackingEnabled())
+            }
+            "setDailyGoal" -> {
+                val steps = call.arguments as? Int
+                if (steps == null) {
+                    result.error("ARG_ERROR", "steps is null", null)
+                    return
+                }
+                setDailyGoal(steps)
+                result.success(null)
+            }
+            "isGoalNotificationEnabled" -> {
+                result.success(isGoalNotificationEnabled())
+            }
+            "setGoalNotificationEnabled" -> {
+                val enabled = call.arguments as? Boolean
+                if (enabled == null) {
+                    result.error("ARG_ERROR", "enabled is null", null)
+                    return
+                }
+                setGoalNotificationEnabled(enabled)
+                result.success(null)
+            }
+            "getAchievedGoalForDate" -> {
+                val dateKey = call.arguments as? String
+                if (dateKey == null) {
+                    result.error("ARG_ERROR", "dateKey is null", null)
+                    return
+                }
+                val key = "$KEY_GOAL_ACHIEVED_PREFIX$dateKey"
+                if (!prefs.contains(key)) {
+                    result.success(null)
+                } else {
+                    result.success(prefs.getInt(key, 0))
+                }
             }
             "getTodaySteps" -> {
                 result.success(getTodayStepsInternal())

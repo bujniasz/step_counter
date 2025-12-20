@@ -269,6 +269,7 @@ class _DashboardPageState extends State<DashboardPage> {
                               goal: goal,
                               progress: progress,
                               onEditGoal: _editGoal,
+                              stepRepository: widget.stepRepository,
                             ),
                             const SizedBox(height: 12),
                             _HourlyChart(
@@ -315,6 +316,7 @@ class _DashboardPageState extends State<DashboardPage> {
                             goal: goal,
                             progress: progress,
                             onEditGoal: _editGoal,
+                            stepRepository: widget.stepRepository,
                           ),
                           const SizedBox(height: 12),
                           _HourlyChart(
@@ -357,12 +359,18 @@ class _SettingsPageState extends State<SettingsPage> {
   bool? _trackingEnabled;
   bool _trackingBusy = false;
 
+  bool? _goalNotifEnabled;
+  bool _goalNotifBusy = false;
+  static const MethodChannel _methodChannel = MethodChannel('step_counter/methods');
+
   late BodyParamsSettings _settings;
 
   @override
   void initState() {
     super.initState();
     _loadTracking();
+
+    _loadGoalNotification();
 
     _settings = BodyParamsStore.settingsNotifier.value;
     BodyParamsStore.settingsNotifier.addListener(_onExternalSettingsChanged);
@@ -393,6 +401,56 @@ class _SettingsPageState extends State<SettingsPage> {
     } finally {
       if (mounted) {
         setState(() => _trackingBusy = false);
+      }
+    }
+  }
+
+  Future<void> _loadGoalNotification() async {
+    if (kIsWeb || !Platform.isAndroid) {
+      setState(() {
+        _goalNotifEnabled = true;
+      });
+      return;
+    }
+    try {
+      final result =
+          await _methodChannel.invokeMethod<bool>('isGoalNotificationEnabled');
+      setState(() {
+        _goalNotifEnabled = result ?? true;
+      });
+    } catch (_) {
+      setState(() {
+        _goalNotifEnabled = true;
+      });
+    }
+  }
+
+  Future<void> _onGoalNotificationChanged(bool value) async {
+    if (_goalNotifBusy) return;
+    setState(() {
+      _goalNotifEnabled = value;
+      _goalNotifBusy = true;
+    });
+
+    if (kIsWeb || !Platform.isAndroid) {
+      setState(() {
+        _goalNotifBusy = false;
+      });
+      return;
+    }
+
+    try {
+      await _methodChannel.invokeMethod(
+        "setGoalNotificationEnabled",
+        value,
+      );
+    } catch (_) {
+      // Można ewentualnie zareagować, ale UI zostawiamy jak jest
+    } finally {
+      if (mounted) {
+        setState(() {
+          _goalNotifBusy = false;
+        });
       }
     }
   }
@@ -479,12 +537,44 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
 
-        const SizedBox(height: 8),
-        Text(
-          'Gdy funkcja jest wyłączona, kroki nie są zliczane, a serwis nie '
-          'wznowi pracy automatycznie po restarcie telefonu.',
-          style: theme.textTheme.bodySmall!.copyWith(
-            color: theme.colorScheme.onSurface.withOpacity(0.65),
+        // --- OPIS POD PIERWSZYM SWITCHEM ---
+        Padding(
+          padding: const EdgeInsets.only(left: 16, right: 16, bottom: 12),
+          child: Text(
+            'Gdy funkcja jest wyłączona, kroki nie są zliczane, a serwis nie '
+            'wznowi pracy automatycznie po restarcie telefonu.',
+            style: theme.textTheme.bodySmall!.copyWith(
+              color: theme.colorScheme.onSurface.withOpacity(0.65),
+            ),
+          ),
+        ),
+
+        // 🌟 DUŻY, CZYTELNY ODDZIELACZ SEKCJI
+        const SizedBox(height: 20),
+
+        // --- DRUGI SWITCH – osobna sekcja ---
+        Material(
+          color: Colors.transparent,
+          child: SwitchListTile(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            title: Text(
+              'Powiadom o spełnieniu celu',
+              style: theme.textTheme.bodyLarge!.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            subtitle: Text(
+              _goalNotifEnabled == false
+                  ? 'Powiadomienie po osiągnięciu celu jest wyłączone.'
+                  : 'Otrzymasz powiadomienie, gdy dzienny cel zostanie osiągnięty.',
+              style: theme.textTheme.bodySmall,
+            ),
+            value: _goalNotifEnabled ?? true,
+            onChanged: (_goalNotifEnabled == null || _goalNotifBusy)
+                ? null
+                : _onGoalNotificationChanged,
           ),
         ),
 
@@ -862,13 +952,14 @@ class _WeightSettingsPageState extends State<WeightSettingsPage> {
 
 
 
-class _StepsCard extends StatelessWidget {
+class _StepsCard extends StatefulWidget {
   const _StepsCard({
     required this.date,
     required this.steps,
     required this.goal,
     required this.progress,
     required this.onEditGoal,
+    required this.stepRepository,
   });
 
   final DateTime date;
@@ -876,62 +967,203 @@ class _StepsCard extends StatelessWidget {
   final int goal;
   final double progress;
   final VoidCallback onEditGoal;
+  final StepCounterRepository stepRepository;
+
+  @override
+  State<_StepsCard> createState() => _StepsCardState();
+}
+
+class _StepsCardState extends State<_StepsCard> {
+  int? _achievedGoal;
+  int? _streak;
+  bool _tooltipVisible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAchievedGoal();
+  }
+
+  @override
+  void didUpdateWidget(covariant _StepsCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.date != widget.date) {
+      _achievedGoal = null;
+      _streak = null;
+      _tooltipVisible = false;
+      _loadAchievedGoal();
+    }
+  }
+
+  Future<void> _loadAchievedGoal() async {
+    final goal = await widget.stepRepository.getAchievedGoalForDate(widget.date);
+    if (!mounted) return;
+    setState(() {
+      _achievedGoal = goal;
+    });
+  }
+
+  Future<void> _ensureStreakLoaded() async {
+    if (_streak != null) return;
+    final s = await widget.stepRepository.getGoalStreakUntil(widget.date);
+    if (!mounted) return;
+    setState(() {
+      _streak = s;
+    });
+  }
+
+  void _onCheckTapDown(TapDownDetails details) async {
+    await _ensureStreakLoaded();
+    if (!mounted) return;
+    setState(() {
+      _tooltipVisible = true;
+    });
+  }
+
+  void _onCheckTapEnd([dynamic _]) {
+    if (!mounted) return;
+    setState(() {
+      _tooltipVisible = false;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final percent = (progress * 100).clamp(0, 100).toStringAsFixed(0);
+    final percent = (widget.progress * 100).clamp(0, 100).toStringAsFixed(0);
+
     return Card(
       elevation: 0,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Kroki', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              crossAxisAlignment: CrossAxisAlignment.center,
+      child: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('cel: $goal', style: theme.textTheme.labelLarge),
-                TextButton.icon(
-                  onPressed: onEditGoal,
-                  icon: const Icon(Icons.edit, size: 16),
-                  label: const Text('Zmień cel'),
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    minimumSize: const Size(0, 32),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text('$steps', style: theme.textTheme.displaySmall),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                  
-                Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: LinearProgressIndicator(
-                      value: progress,
-                      minHeight: 12,   
+                Text('Kroki', style: theme.textTheme.titleMedium),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Text('cel: ${widget.goal}',
+                        style: theme.textTheme.labelLarge),
+                    TextButton.icon(
+                      onPressed: widget.onEditGoal,
+                      icon: const Icon(Icons.edit, size: 16),
+                      label: const Text('Zmień cel'),
+                      style: TextButton.styleFrom(
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 8),
+                        minimumSize: const Size(0, 32),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                Text('$percent%', style: theme.textTheme.labelLarge),
+                const SizedBox(height: 8),
+
+                // 🔢 kroki + ✔ fajka po prawej, POD "Zmień cel"
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${widget.steps}',
+                        style: theme.textTheme.displaySmall,
+                      ),
+                    ),
+                    if (_achievedGoal != null)
+                      GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onTapDown: _onCheckTapDown,
+                        onTapUp: _onCheckTapEnd,
+                        onTapCancel: _onCheckTapEnd,
+                        child: Padding(
+                          padding: const EdgeInsets.only(left: 8.0),
+                          child: Icon(
+                            Icons.check_circle,
+                            size: 32,
+                            color: theme.colorScheme.primary,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: LinearProgressIndicator(
+                          value: widget.progress,
+                          minHeight: 12,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text('$percent%', style: theme.textTheme.labelLarge),
+                  ],
+                ),
               ],
             ),
-          ],
+          ),
+
+          // 📝 TOOLTIP – nad kartą, nie zasłania "Zmień cel"
+          if (_tooltipVisible && _achievedGoal != null && _streak != null)
+            Positioned(
+              right: 16,
+              top: 8,
+              child: _GoalTooltip(
+                goal: _achievedGoal!,
+                streak: _streak!,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GoalTooltip extends StatelessWidget {
+  const _GoalTooltip({
+    required this.goal,
+    required this.streak,
+  });
+
+  final int goal;
+  final int streak;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      elevation: 4,
+      borderRadius: BorderRadius.circular(8),
+      color: theme.colorScheme.surface,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: DefaultTextStyle(
+          style: theme.textTheme.bodySmall!.copyWith(
+            color: theme.colorScheme.onSurface,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Cel: $goal kroków'),
+              const SizedBox(height: 2),
+              Text('Streak: $streak dni z rzędu'),
+            ],
+          ),
         ),
       ),
     );
   }
 }
+
 
 class _MetricsCard extends StatelessWidget {
   const _MetricsCard({
