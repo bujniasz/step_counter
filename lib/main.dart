@@ -4,12 +4,15 @@ import 'features/steps/presentation/pages/pages.dart';
 import 'features/steps/data/step_counter/step_counter_repository.dart';
 import 'features/steps/data/step_counter/step_counter_android.dart';
 import 'features/steps/data/body_params_store.dart';
-import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'features/steps/data/goal_store.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -96,6 +99,233 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
+  Future<void> _showDataManagementSheet(BuildContext context) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (_) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(
+                title: Text('Zarządzanie danymi'),
+                subtitle: Text('Eksport i import historii kroków'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.upload_file),
+                title: const Text('Eksportuj dane'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _exportData(context);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.download),
+                title: const Text('Importuj dane'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _importData(context);
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _exportData(BuildContext context) async {
+    if (kIsWeb) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Eksport nie jest dostępny w wersji web.')),
+      );
+      return;
+    }
+
+    try {
+      final json = await _stepRepository.exportDataJson();
+      if (json.isEmpty) {
+        throw Exception('empty_export');
+      }
+
+      final dir = await getTemporaryDirectory();
+      final ts = DateTime.now();
+      final y = ts.year.toString().padLeft(4, '0');
+      final m = ts.month.toString().padLeft(2, '0');
+      final d = ts.day.toString().padLeft(2, '0');
+      final hh = ts.hour.toString().padLeft(2, '0');
+      final mm = ts.minute.toString().padLeft(2, '0');
+      final filename = 'step-counter-export_${y}-${m}-${d}_${hh}-${mm}.json';
+      final file = File('${dir.path}/$filename');
+      await file.writeAsString(json);
+
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: 'application/json')],
+        subject: 'Step Counter — eksport danych',
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Wyeksportowano dane.')),
+        );
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('Export error: $e');
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Nie udało się wyeksportować danych.')),
+        );
+      }
+    }
+  }
+
+  Future<void> _importData(BuildContext context) async {
+    if (kIsWeb) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Import nie jest dostępny w wersji web.')),
+      );
+      return;
+    }
+
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+        withData: true,
+      );
+      if (picked == null || picked.files.isEmpty) return;
+
+      final bytes = picked.files.first.bytes;
+      if (bytes == null) {
+        throw Exception('no_bytes');
+      }
+      final json = String.fromCharCodes(bytes);
+
+      final preview = await _stepRepository.previewImport(json);
+
+      var importSettings = true;
+      var mode = ImportMode.mergeSkip;
+
+      if (!mounted) return;
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) {
+          return StatefulBuilder(
+            builder: (ctx, setState) {
+              return AlertDialog(
+                title: const Text('Import danych'),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('W pliku: ${preview.daysInFile} dni'),
+                    Text('Nowe dni: ${preview.daysNew}'),
+                    Text('Istniejące dni: ${preview.daysExisting}'),
+                    const SizedBox(height: 12),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: importSettings,
+                      onChanged: (v) => setState(() => importSettings = v ?? true),
+                      title: const Text('Importuj ustawienia'),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text('Tryb importu:'),
+                    RadioListTile<ImportMode>(
+                      contentPadding: EdgeInsets.zero,
+                      value: ImportMode.mergeSkip,
+                      groupValue: mode,
+                      onChanged: (v) => setState(() => mode = v!),
+                      title: const Text('Scal (pomiń istniejące)'),
+                    ),
+                    RadioListTile<ImportMode>(
+                      contentPadding: EdgeInsets.zero,
+                      value: ImportMode.mergeOverwrite,
+                      groupValue: mode,
+                      onChanged: (v) => setState(() => mode = v!),
+                      title: const Text('Scal (nadpisz istniejące)'),
+                    ),
+                    RadioListTile<ImportMode>(
+                      contentPadding: EdgeInsets.zero,
+                      value: ImportMode.replaceAllHistory,
+                      groupValue: mode,
+                      onChanged: (v) => setState(() => mode = v!),
+                      title: const Text('Zastąp całą historię'),
+                    ),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('Anuluj'),
+                  ),
+                  FilledButton(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    child: const Text('Importuj'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+
+      if (proceed != true) return;
+
+      if (mode == ImportMode.replaceAllHistory) {
+        final confirm = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Zastąpić historię?'),
+            content: const Text(
+              'To usunie obecną historię kroków z tego telefonu i zastąpi ją danymi z pliku.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Anuluj'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Zastąp'),
+              ),
+            ],
+          ),
+        );
+        if (confirm != true) return;
+      }
+
+      final res = await _stepRepository.importData(
+        json,
+        mode: mode,
+        importSettings: importSettings,
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Zaimportowano ${res.importedDays} dni (pominięto ${res.skippedDays}).',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('Import error: $e');
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Nie udało się zaimportować danych.')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final pages = [
@@ -105,15 +335,21 @@ class _HomeShellState extends State<HomeShell> {
     return Scaffold(
       appBar: AppBar(
       title: Text(_titles[_index]),
-      actions: [
-        if (_index == 0)
-          IconButton(
-            icon: const Icon(Icons.info_outline),
-            tooltip: 'Informacje',
-            onPressed: () => _showPermissionsInfo(context),
-          ),
-      ],
-    ),
+        actions: [
+          if (_index == 0) ...[
+            IconButton(
+              icon: const Icon(Icons.import_export),
+              tooltip: 'Import / Eksport',
+              onPressed: () => _showDataManagementSheet(context),
+            ),
+            IconButton(
+              icon: const Icon(Icons.info_outline),
+              tooltip: 'Informacje',
+              onPressed: () => _showPermissionsInfo(context),
+            ),
+          ]
+        ],
+      ),
       body: IndexedStack(
         index: _index,
         children: pages,
