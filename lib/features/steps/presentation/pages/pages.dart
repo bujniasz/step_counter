@@ -89,17 +89,6 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  // mocked data
-  // List<int> _mockHourlyFor(DateTime day) {
-  //   final d = _truncate(day);
-  //   final seed = d.millisecondsSinceEpoch ~/ (24 * 3600 * 1000);
-  //   return List<int>.generate(24, (h) {
-  //     final base = ((seed * 73 + h * 31) % 9) + 1;
-  //     final isDay = h >= 7 && h <= 21;
-  //     return base * (isDay ? 250 : 60);
-  //   });
-  // }
-
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
@@ -134,12 +123,10 @@ class _DashboardPageState extends State<DashboardPage> {
 
     GoalStore.getGoal().then((v) => setState(() => _goal = v));
 
-    // Android 10+ req
     if (!kIsWeb && Platform.isAndroid) {
       ensureActivityRecognitionPermission();
     }
 
-    // Na start pobierz dzisiejsze dane i zapisz w cache.
     final today = DateTime.now();
     widget.stepRepository.getStepsForDate(today).then((value) {
       if (!mounted) return;
@@ -161,13 +148,6 @@ class _DashboardPageState extends State<DashboardPage> {
       _bodySettings = BodyParamsStore.settingsNotifier.value;
     });
   }
-    
-  // int _mockStepsFor(DateTime day) {
-  //   final d = _truncate(day);
-  //   final seed = d.millisecondsSinceEpoch ~/ (24 * 3600 * 1000);   
-  //   final base = (seed % 7000) + 1500;   
-  //   return base;
-  // }
 
   @override
   void dispose() {
@@ -234,7 +214,6 @@ class _DashboardPageState extends State<DashboardPage> {
               final isToday = _isSameDate(date, today);
 
               if (isToday) {
-                // today - live update
                 return StreamBuilder<int>(
                   stream: widget.stepRepository.watchTodaySteps(),
                   builder: (context, stepsSnapshot) {
@@ -290,7 +269,6 @@ class _DashboardPageState extends State<DashboardPage> {
                 );
               }
 
-              // other days - one time download
               return FutureBuilder<int>(
                 future: widget.stepRepository.getStepsForDate(date),
                 builder: (context, stepsSnapshot) {
@@ -363,6 +341,10 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _goalNotifBusy = false;
   static const MethodChannel _methodChannel = MethodChannel('step_counter/methods');
 
+  String _retentionMode = 'NEVER'; // NEVER | DAYS
+  int? _retentionDays; // only if mode == DAYS
+  DateTime? _retentionLastCleanup;
+
   late BodyParamsSettings _settings;
 
   @override
@@ -371,6 +353,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _loadTracking();
 
     _loadGoalNotification();
+
+    _loadRetentionPolicy();
 
     _settings = BodyParamsStore.settingsNotifier.value;
     BodyParamsStore.settingsNotifier.addListener(_onExternalSettingsChanged);
@@ -445,7 +429,6 @@ class _SettingsPageState extends State<SettingsPage> {
         value,
       );
     } catch (_) {
-      // Można ewentualnie zareagować, ale UI zostawiamy jak jest
     } finally {
       if (mounted) {
         setState(() {
@@ -454,6 +437,270 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     }
   }
+
+    Future<void> _loadRetentionPolicy() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    try {
+      final result = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
+        'getRetentionPolicy',
+      );
+      if (!mounted) return;
+      final map = result ?? const {};
+      final mode = (map['mode'] as String?) ?? 'NEVER';
+      final days = map['days'];
+      final lastCleanup = map['last_cleanup'];
+
+      setState(() {
+        _retentionMode = mode;
+        _retentionDays = (days is int && days >= 1) ? days.clamp(1, 365) : null;
+        if (lastCleanup is int && lastCleanup > 0) {
+          _retentionLastCleanup =
+              DateTime.fromMillisecondsSinceEpoch(lastCleanup);
+        } else if (lastCleanup is num && lastCleanup.toInt() > 0) {
+          _retentionLastCleanup =
+              DateTime.fromMillisecondsSinceEpoch(lastCleanup.toInt());
+        } else {
+          _retentionLastCleanup = null;
+        }
+      });
+      debugPrint('Retention loaded: mode=$_retentionMode days=$_retentionDays last=$_retentionLastCleanup');
+    } catch (e, st) {
+      debugPrint('getRetentionPolicy FAILED: $e');
+      debugPrint('$st');
+    }
+  }
+
+  String get _retentionSubtitle {
+    if (_retentionMode != 'DAYS') {
+      return 'Czyszczenie danych jest wyłączone';
+    }
+    final base = _retentionLastCleanup ?? DateTime.now();
+    final intervalDays = (_retentionMode == 'DAYS' ? (_retentionDays ?? 1) : 0);
+    final next = base.add(Duration(days: intervalDays));
+    return 'Następne czyszczenie danych: ${DateFormat('dd.MM.yyyy').format(next)}';
+  }
+
+  String get _retentionValueText {
+    if (_retentionMode != 'DAYS') return 'Nigdy';
+    final d = _retentionDays ?? 0;
+    if (d == 1) return 'Codziennie';
+    if (d == 7) return 'Raz w tygodniu';
+    if (d == 30) return 'Raz w miesiącu';
+    if (d == 365) return 'Raz w roku';
+    return 'Własne: $d dni';
+  }
+
+  Future<void> _setRetentionPolicy({
+    required String mode, // NEVER | DAYS
+    int? days,
+  }) async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    await _methodChannel.invokeMethod(
+      'setRetentionPolicy',
+      {
+        'mode': mode,
+        'days': days,
+      },
+    );
+  }
+
+  Future<void> _showRetentionDialog(BuildContext context) async {
+    if (kIsWeb || !Platform.isAndroid) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Opcja dostępna tylko na Androidzie.')),
+      );
+      return;
+    }
+
+    String mode = _retentionMode; // NEVER | DAYS
+    int? selectedDays = (_retentionMode == 'DAYS') ? (_retentionDays ?? 7) : null;
+
+    String customText =
+        (_retentionMode == 'DAYS' && _retentionDays != null && ![1, 7, 30, 365].contains(_retentionDays))
+            ? _retentionDays.toString()
+            : '';
+
+    int? parseCustomDays(String v) {
+      final parsed = int.tryParse(v.trim());
+      if (parsed == null) return null;
+      if (parsed < 1 || parsed > 365) return null;
+      return parsed;
+    }
+
+    final result = await showDialog<Map<String, dynamic>?>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setStateDialog) {
+            void pickNever() {
+              setStateDialog(() {
+                mode = 'NEVER';
+                selectedDays = null;
+                customText = '';
+              });
+            }
+
+            void pickDays(int d) {
+              setStateDialog(() {
+                mode = 'DAYS';
+                selectedDays = d.clamp(1, 365);
+                if ([1, 7, 30, 365].contains(selectedDays)) {
+                  customText = '';
+                }
+              });
+            }
+
+            final customDays = parseCustomDays(customText);
+            final effectiveDays = (mode == 'DAYS') ? (customDays ?? selectedDays) : null;
+            final canSave = mode == 'NEVER' || effectiveDays != null;
+
+            return AlertDialog(
+              title: const Text('Automatyczne czyszczenie danych'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    RadioListTile<String>(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Nigdy'),
+                      value: 'NEVER',
+                      groupValue: mode,
+                      onChanged: (_) => pickNever(),
+                    ),
+                    const SizedBox(height: 8),
+                    RadioListTile<int>(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Codziennie'),
+                      value: 1,
+                      groupValue: selectedDays,
+                      onChanged: (v) => pickDays(v ?? 1),
+                    ),
+                    RadioListTile<int>(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Raz w tygodniu'),
+                      value: 7,
+                      groupValue: selectedDays,
+                      onChanged: (v) => pickDays(v ?? 7),
+                    ),
+                    RadioListTile<int>(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Raz w miesiącu'),
+                      value: 30,
+                      groupValue: selectedDays,
+                      onChanged: (v) => pickDays(v ?? 30),
+                    ),
+                    RadioListTile<int>(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Raz w roku'),
+                      value: 365,
+                      groupValue: selectedDays,
+                      onChanged: (v) => pickDays(v ?? 365),
+                    ),
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Własne',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      initialValue: customText,
+                      keyboardType: TextInputType.number,
+                      decoration: InputDecoration(
+                        labelText: 'Liczba dni (1–365)',
+                        hintText: 'np. 14',
+                        errorText: (customText.isEmpty || customDays != null) ? null : 'Podaj liczbę 1–365',
+                      ),
+                      onChanged: (v) {
+                        setStateDialog(() {
+                          customText = v;
+                          mode = 'DAYS';
+                          if (parseCustomDays(customText) != null) {
+                            selectedDays = null;
+                          }
+                        });
+                      },
+                      onTap: () {
+                        setStateDialog(() {
+                          mode = 'DAYS';
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      mode == 'DAYS'
+                          ? 'Będziemy trzymać lokalnie ostatnie ${effectiveDays ?? 7} dni historii. Czyszczenie wykona się przy następnym uruchomieniu aplikacji/serwisu.'
+                          : 'Czyszczenie danych jest wyłączone.',
+                      style: Theme.of(context).textTheme.bodySmall!.copyWith(
+                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(ctx).pop(null);
+                  },
+                  child: const Text('Anuluj'),
+                ),
+                FilledButton(
+                  onPressed: canSave
+                      ? () => Navigator.of(ctx).pop({
+                            'mode': mode,
+                            'days': effectiveDays,
+                          })
+                      : null,
+                  child: const Text('Zapisz'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null) return;
+
+    try {
+      final modeFromDialog = (result['mode'] as String?) ?? 'NEVER';
+      final daysFromDialog = result['days'] as int?;
+
+      setState(() {
+        _retentionMode = modeFromDialog;
+        _retentionDays = (modeFromDialog == 'DAYS') ? (daysFromDialog?.clamp(1, 365)) : null;
+      });
+
+      if (modeFromDialog == 'NEVER') {
+        await _setRetentionPolicy(mode: 'NEVER');
+      } else {
+        await _setRetentionPolicy(
+          mode: 'DAYS',
+          days: (daysFromDialog ?? 7).clamp(1, 365),
+        );
+      }
+
+      await _loadRetentionPolicy();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Zapisano ustawienia czyszczenia.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Nie udało się zapisać ustawień.')),
+        );
+      }
+      await _loadRetentionPolicy();
+    }
+  }
+
 
   void _onExternalSettingsChanged() {
     setState(() {
@@ -494,16 +741,12 @@ class _SettingsPageState extends State<SettingsPage> {
     final theme = Theme.of(context);
     final trackingEnabled = _trackingEnabled;
 
-    const sectionSpacing = SizedBox(height: 24);
+    const sectionSpacing = SizedBox(height: 20);
     const tileSpacing = SizedBox(height: 4);
 
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       children: [
-        //
-        // ─────────────────────────────────────────
-        // SEKCJA 1 — ŚLEDZENIE KROKÓW
-        // ─────────────────────────────────────────
         Text(
           'Ogólne',
           style: theme.textTheme.titleMedium!.copyWith(
@@ -515,6 +758,7 @@ class _SettingsPageState extends State<SettingsPage> {
         Material(
           color: Colors.transparent,
           child: SwitchListTile(
+            contentPadding: EdgeInsets.zero,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
@@ -537,25 +781,23 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
 
-        // --- OPIS POD PIERWSZYM SWITCHEM ---
         Padding(
-          padding: const EdgeInsets.only(left: 16, right: 16, bottom: 12),
+          padding: const EdgeInsets.only(bottom: 12),
           child: Text(
             'Gdy funkcja jest wyłączona, kroki nie są zliczane, a serwis nie '
-            'wznowi pracy automatycznie po restarcie telefonu.',
+            'wznowi pracy po restarcie telefonu.',
             style: theme.textTheme.bodySmall!.copyWith(
               color: theme.colorScheme.onSurface.withOpacity(0.65),
             ),
           ),
         ),
 
-        // 🌟 DUŻY, CZYTELNY ODDZIELACZ SEKCJI
-        const SizedBox(height: 20),
+        const SizedBox(height: 10),
 
-        // --- DRUGI SWITCH – osobna sekcja ---
         Material(
           color: Colors.transparent,
           child: SwitchListTile(
+            contentPadding: EdgeInsets.zero,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
@@ -578,14 +820,18 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
 
+        const SizedBox(height: 10),
+
+        _SettingsEntryTile(
+          title: 'Automatyczne czyszczenie danych',
+          subtitle: '$_retentionValueText\n$_retentionSubtitle',
+          onTap: () => _showRetentionDialog(context),
+        ),
+
         sectionSpacing,
         Divider(height: 1, thickness: 1, color: theme.dividerColor.withOpacity(0.4)),
         sectionSpacing,
 
-        //
-        // ─────────────────────────────────────────
-        // SEKCJA 2 — DYSTANS
-        // ─────────────────────────────────────────
         Text(
           'Dystans',
           style: theme.textTheme.titleMedium!.copyWith(
@@ -610,10 +856,6 @@ class _SettingsPageState extends State<SettingsPage> {
         Divider(height: 1, thickness: 1, color: theme.dividerColor.withOpacity(0.4)),
         sectionSpacing,
 
-        //
-        // ─────────────────────────────────────────
-        // SEKCJA 3 — KALORIE
-        // ─────────────────────────────────────────
         Text(
           'Kalorie',
           style: theme.textTheme.titleMedium!.copyWith(
@@ -744,10 +986,8 @@ class _StrideSettingsPageState extends State<StrideSettingsPage> {
                 double? d = _parseDouble(value);
 
                 if (d != null) {
-                  // Zakres 0–2
                   if (d < 0) d = 0;
                   if (d > 2) d = 2;
-                  // Maks 2 miejsca po przecinku
                   d = double.parse(d.toStringAsFixed(2));
                 }
 
@@ -928,10 +1168,8 @@ class _WeightSettingsPageState extends State<WeightSettingsPage> {
                 double? w = _parseDouble(value);
 
                 if (w != null) {
-                  // Zakres 0–300
                   if (w < 0) w = 0;
                   if (w > 300) w = 300;
-                  // Maks 2 miejsca po przecinku
                   w = double.parse(w.toStringAsFixed(2));
                 }
 
@@ -1041,7 +1279,7 @@ class _StepsCardState extends State<_StepsCard> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Kroki', style: theme.textTheme.titleMedium),
+                Text('Liczba kroków', style: theme.textTheme.titleMedium),
                 const SizedBox(height: 8),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1064,7 +1302,6 @@ class _StepsCardState extends State<_StepsCard> {
                 ),
                 const SizedBox(height: 8),
 
-                // 🔢 kroki + ✔ fajka po prawej, POD "Zmień cel"
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
@@ -1112,7 +1349,6 @@ class _StepsCardState extends State<_StepsCard> {
             ),
           ),
 
-          // 📝 TOOLTIP – nad kartą, nie zasłania "Zmień cel"
           if (_tooltipVisible && _achievedGoal != null && _streak != null)
             Positioned(
               right: 16,
@@ -1228,7 +1464,6 @@ class _HourlyChart extends StatelessWidget {
     final int maxData =
         data.isEmpty ? 0 : data.reduce((a, b) => a > b ? a : b);
 
-    // base maximym
     final double baseMax = maxData == 0 ? 1000 : maxData.toDouble();
 
     final double rawStep = baseMax / 4.0;

@@ -13,6 +13,96 @@ abstract class StepCounterRepository {
   Future<int> getGoalStreakUntil(DateTime date);
 
   Future<void> setTrackingEnabled(bool enabled);
+
+
+  Future<String> exportDataJson();
+
+  Future<ImportPreview> previewImport(String json);
+
+  Future<ImportResult> importData(
+    String json, {
+    required ImportMode mode,
+    bool importSettings = true,
+  });
+}
+
+enum RetentionMode { never, days }
+
+class RetentionPolicy {
+  const RetentionPolicy({
+    required this.mode,
+    required this.days,
+    required this.lastCleanup,
+  });
+
+  final RetentionMode mode;
+  final int? days;
+  final DateTime? lastCleanup;
+
+  factory RetentionPolicy.fromMap(Map<dynamic, dynamic> map) {
+    return RetentionPolicy(
+      mode: map['mode'] == 'DAYS' ? RetentionMode.days : RetentionMode.never,
+      days: (map['days'] as int?)?.clamp(0, 365),
+      lastCleanup: map['last_cleanup'] != null && map['last_cleanup'] != 0
+          ? DateTime.fromMillisecondsSinceEpoch(map['last_cleanup'])
+          : null,
+    );
+  }
+}
+
+enum ImportMode {
+  mergeSkip,
+  mergeOverwrite,
+  replaceAllHistory,
+}
+
+class ImportPreview {
+  const ImportPreview({
+    required this.schemaVersion,
+    required this.daysInFile,
+    required this.daysExisting,
+    required this.daysNew,
+    required this.settingsInFile,
+  });
+
+  final int schemaVersion;
+  final int daysInFile;
+  final int daysExisting;
+  final int daysNew;
+  final bool settingsInFile;
+
+  factory ImportPreview.fromMap(Map<dynamic, dynamic> map) {
+    return ImportPreview(
+      schemaVersion: (map['schema_version'] as num?)?.toInt() ?? 0,
+      daysInFile: (map['days_in_file'] as num?)?.toInt() ?? 0,
+      daysExisting: (map['days_existing'] as num?)?.toInt() ?? 0,
+      daysNew: (map['days_new'] as num?)?.toInt() ?? 0,
+      settingsInFile: (map['settings_in_file'] as bool?) ?? false,
+    );
+  }
+}
+
+class ImportResult {
+  const ImportResult({
+    required this.importedDays,
+    required this.skippedDays,
+    required this.overwrittenDays,
+    required this.importedSettings,
+  });
+
+  final int importedDays;
+  final int skippedDays;
+  final int overwrittenDays;
+  final bool importedSettings;
+
+  factory ImportResult.fromMap(Map<dynamic, dynamic> map) {
+    return ImportResult(
+      importedDays: (map['imported_days'] as num?)?.toInt() ?? 0,
+      skippedDays: (map['skipped_days'] as num?)?.toInt() ?? 0,
+      overwrittenDays: (map['overwritten_days'] as num?)?.toInt() ?? 0,
+      importedSettings: (map['imported_settings'] as bool?) ?? false,
+    );
+  }
 }
 
 
@@ -66,7 +156,6 @@ class MockStepCounterRepository implements StepCounterRepository {
 
   @override
   Future<int?> getAchievedGoalForDate(DateTime day) async {
-    // Proste: uznaj, że celem jest 8000 i jeśli mockowane kroki >= 8000, to cel spełniony.
     final steps = _stepsForDateSync(_truncate(day));
     const goal = 8000;
     return steps >= goal ? goal : null;
@@ -83,5 +172,35 @@ class MockStepCounterRepository implements StepCounterRepository {
       current = current.subtract(const Duration(days: 1));
     }
     return streak;
+  }
+
+  @override
+  Future<String> exportDataJson() async {
+    return '{"schema":"step_counter_export","schema_version":1,"exported_at":"mock","app":{"platform":"mock","package":"mock"},"data":{"days":{},"settings":{},"meta":{},"extras":{}}}';
+  }
+
+  @override
+  Future<ImportPreview> previewImport(String json) async {
+    return const ImportPreview(
+      schemaVersion: 1,
+      daysInFile: 0,
+      daysExisting: 0,
+      daysNew: 0,
+      settingsInFile: false,
+    );
+  }
+
+  @override
+  Future<ImportResult> importData(
+    String json, {
+    required ImportMode mode,
+    bool importSettings = true,
+  }) async {
+    return const ImportResult(
+      importedDays: 0,
+      skippedDays: 0,
+      overwrittenDays: 0,
+      importedSettings: false,
+    );
   }
 }

@@ -6,7 +6,6 @@ import 'package:permission_handler/permission_handler.dart';
 
 const _stepCounterMethodChannel = MethodChannel('step_counter/methods');
 
-/// Ensure that we have ACTIVITY_RECOGNITION on Android
 Future<bool> ensureActivityRecognitionPermission() async {
   if (kIsWeb || !Platform.isAndroid) {
     return true;
@@ -14,7 +13,6 @@ Future<bool> ensureActivityRecognitionPermission() async {
 
   final status = await Permission.activityRecognition.status;
   if (status.isGranted) {
-    // Ensure that tracking service works
     try {
       await _stepCounterMethodChannel
           .invokeMethod('startTrackingService');

@@ -46,7 +46,6 @@ class AndroidStepCounterRepository implements StepCounterRepository {
       },
       onError: (error, stack) {
         if (kDebugMode) {
-          // only in debug
           print('Step counter event error: $error');
         }
       },
@@ -77,11 +76,9 @@ class AndroidStepCounterRepository implements StepCounterRepository {
           print('getTodaySteps error: $e');
         }
       }
-      // Fallback: last known valeu
       return _lastTodaySteps;
     }
 
-    // other days - read from history
     try {
       final result = await _methodChannel.invokeMethod<int>(
         'getStepsForDate',
@@ -124,7 +121,6 @@ class AndroidStepCounterRepository implements StepCounterRepository {
       }
     }
 
-    // read from history
     try {
       final result = await _methodChannel
           .invokeMethod<List<dynamic>>('getHourlyStepsForDate', dateKey);
@@ -209,5 +205,92 @@ class AndroidStepCounterRepository implements StepCounterRepository {
 
     return streak;
   }
+
+  @override
+  Future<String> exportDataJson() async {
+    try {
+      final json = await _methodChannel.invokeMethod<String>('exportData');
+      return json ?? '';
+    } catch (e) {
+      if (kDebugMode) {
+        print('exportData error: $e');
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  Future<ImportPreview> previewImport(String json) async {
+    try {
+      final map = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
+        'previewImport',
+        json,
+      );
+      return ImportPreview.fromMap(map ?? const {});
+    } catch (e) {
+      if (kDebugMode) {
+        print('previewImport error: $e');
+      }
+      rethrow;
+    }
+  }
+
+  String _modeToNative(ImportMode mode) {
+    switch (mode) {
+      case ImportMode.mergeSkip:
+        return 'MERGE_SKIP';
+      case ImportMode.mergeOverwrite:
+        return 'MERGE_OVERWRITE';
+      case ImportMode.replaceAllHistory:
+        return 'REPLACE_ALL_HISTORY';
+    }
+  }
+
+  @override
+  Future<ImportResult> importData(
+    String json, {
+    required ImportMode mode,
+    bool importSettings = true,
+  }) async {
+    try {
+      final map = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
+        'importData',
+        {
+          'json': json,
+          'mode': _modeToNative(mode),
+          'importSettings': importSettings,
+        },
+      );
+      return ImportResult.fromMap(map ?? const {});
+    } catch (e) {
+      if (kDebugMode) {
+        print('importData error: $e');
+      }
+      rethrow;
+    }
+  }
+
+  Future<RetentionPolicy> getRetentionPolicy() async {
+    final map =
+        await _methodChannel.invokeMethod<Map>('getRetentionPolicy');
+    return RetentionPolicy.fromMap(map ?? {});
+  }
+
+  Future<void> setRetentionPolicy({
+    required RetentionMode mode,
+    int? days,
+  }) async {
+    if (mode == RetentionMode.days) {
+      assert(days != null && days >= 1 && days <= 365);
+    }
+
+    await _methodChannel.invokeMethod(
+      'setRetentionPolicy',
+      {
+        'mode': mode == RetentionMode.days ? 'DAYS' : 'NEVER',
+        if (mode == RetentionMode.days) 'days': days,
+      },
+    );
+}
 
 }

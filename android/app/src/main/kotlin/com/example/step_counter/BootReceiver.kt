@@ -16,7 +16,6 @@ class BootReceiver : BroadcastReceiver() {
         if (action == Intent.ACTION_BOOT_COMPLETED ||
             action == Intent.ACTION_LOCKED_BOOT_COMPLETED) {
 
-            // Jeśli nie mamy permission, nie odpalamy serwisu.
             val hasPermission =
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     ContextCompat.checkSelfPermission(
