@@ -33,10 +33,12 @@ class StepTrackingService : Service(), SensorEventListener {
         const val PREFS_NAME = "step_counter_prefs"
         const val KEY_TRACKING_ENABLED = "tracking_enabled"
 
-        // Surowa wartość z TYPE_STEP_COUNTER z ostatniego zdarzenia
+        const val KEY_RETENTION_MODE = "retention_policy_mode" // NEVER | DAYS
+        const val KEY_RETENTION_DAYS = "retention_policy_days" // Int
+        const val KEY_RETENTION_LAST_CLEANUP = "retention_last_cleanup_at" // Long (millis)
+
         private const val KEY_LAST_SENSOR_VALUE = "last_sensor_value"
 
-        // Historia: suma kroków i biny godzinowe dla każdej daty
         private const val KEY_DAY_TOTAL_PREFIX = "day_total_"      // + dateKey
         private const val KEY_DAY_HOURLY_PREFIX = "day_hour_"      // + dateKey + "_<hour>"
 
@@ -66,7 +68,6 @@ class StepTrackingService : Service(), SensorEventListener {
     }
 
     private fun isGoalNotificationEnabled(): Boolean {
-        // Domyślnie: powiadomienie włączone
         return prefs.getBoolean(KEY_GOAL_NOTIFICATION_ENABLED, true)
     }
 
@@ -91,9 +92,7 @@ class StepTrackingService : Service(), SensorEventListener {
         val dateKey = currentDayKey()
         if (hasSentGoalNotificationFor(dateKey)) return
 
-        // Zbuduj treść powiadomienia
         val prettyDate = try {
-            // dateKey ma format YYYY-MM-DD (jak w currentDateKey)
             val localDate = LocalDate.parse(dateKey, DateTimeFormatter.ISO_LOCAL_DATE)
             localDate.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))
         } catch (e: Exception) {
@@ -105,7 +104,6 @@ class StepTrackingService : Service(), SensorEventListener {
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        // Kanał już istnieje (ten sam co dla foreground), ale na wszelki wypadek
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
@@ -132,7 +130,6 @@ class StepTrackingService : Service(), SensorEventListener {
             .setOngoing(false)
             .build()
 
-        // Używamy innego ID niż foreground serwisu
         manager.notify(1001, notification)
 
         markGoalNotificationSent(dateKey)
@@ -146,11 +143,83 @@ class StepTrackingService : Service(), SensorEventListener {
             .apply()
     }
 
+    private fun runRetentionCleanupIfNeeded() {
+        if (!::prefs.isInitialized) return
+
+        val mode = prefs.getString(KEY_RETENTION_MODE, "NEVER") ?: "NEVER"
+        if (mode != "DAYS") return
+
+        val keepDays = prefs.getInt(KEY_RETENTION_DAYS, -1)
+        if (keepDays < 1) return
+
+        val today = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            LocalDate.now()
+        } else {
+            try {
+                LocalDate.parse(currentDayKey(), DateTimeFormatter.ISO_LOCAL_DATE)
+            } catch (_: Exception) {
+                return
+            }
+        }
+
+        val cutoff = today.minusDays((keepDays - 1).toLong())
+        if (keepDays < 1) return
+
+        val editor = prefs.edit()
+        var removed = 0
+
+        for (k in prefs.all.keys) {
+            when {
+                k.startsWith(KEY_DAY_TOTAL_PREFIX) -> {
+                    val dateStr = k.removePrefix(KEY_DAY_TOTAL_PREFIX)
+                    val d = parseDateOrNull(dateStr)
+                    if (d != null && d.isBefore(cutoff)) {
+                        editor.remove(k)
+                        removed++
+                    }
+                }
+                k.startsWith(KEY_DAY_HOURLY_PREFIX) -> {
+                    val rest = k.removePrefix(KEY_DAY_HOURLY_PREFIX)
+                    val parts = rest.split("_")
+                    if (parts.isNotEmpty()) {
+                        val d = parseDateOrNull(parts[0])
+                        if (d != null && d.isBefore(cutoff)) {
+                            editor.remove(k)
+                            removed++
+                        }
+                    }
+                }
+                k.startsWith(KEY_GOAL_ACHIEVED_PREFIX) -> {
+                    val dateStr = k.removePrefix(KEY_GOAL_ACHIEVED_PREFIX)
+                    val d = parseDateOrNull(dateStr)
+                    if (d != null && d.isBefore(cutoff)) {
+                        editor.remove(k)
+                        removed++
+                    }
+                }
+            }
+        }
+
+        editor.putLong(KEY_RETENTION_LAST_CLEANUP, System.currentTimeMillis())
+        editor.apply()
+
+        Log.i(TAG, "Retention cleanup done: keepDays=$keepDays cutoff=$cutoff removedKeys=$removed")
+    }
+
+    private fun parseDateOrNull(dateStr: String): LocalDate? {
+        return try {
+            LocalDate.parse(dateStr, DateTimeFormatter.ISO_LOCAL_DATE)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
 
     override fun onCreate() {
         super.onCreate()
 
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        runRetentionCleanupIfNeeded()
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
 
@@ -172,6 +241,8 @@ class StepTrackingService : Service(), SensorEventListener {
             stopSelf()
             return START_NOT_STICKY
         }
+
+        runRetentionCleanupIfNeeded()
 
         val notification = buildNotification()
         startForeground(NOTIFICATION_ID, notification)
@@ -225,7 +296,6 @@ class StepTrackingService : Service(), SensorEventListener {
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // ignored
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
@@ -245,7 +315,6 @@ class StepTrackingService : Service(), SensorEventListener {
 
         val delta = rawValue - lastRaw
 
-        // sanity-check
         if (delta <= 0f || delta >= 50000f) {
             editor.putFloat(KEY_LAST_SENSOR_VALUE, rawValue)
             editor.apply()

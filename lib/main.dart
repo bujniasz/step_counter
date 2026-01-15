@@ -82,7 +82,7 @@ class _HomeShellState extends State<HomeShell> {
       builder: (_) => AlertDialog(
         title: const Text('Informacje'),
         content: const Text(
-          'W celu zapewnienia nieprzerwanej pracy krokomierza:\n\n'
+          'W celu zapewnienia prawidłowej i nieprzerwanej pracy krokomierza:\n\n'
           '• przypmin aplikację w sekcji „Ostatnie”,\n'
           '• pozwól aplikacji na dostęp do „Aktywność fizyczna”,\n'
           '• włącz „Autostart”,\n'
@@ -173,7 +173,6 @@ class _HomeShellState extends State<HomeShell> {
       }
     } catch (e) {
       if (kDebugMode) {
-        // ignore: avoid_print
         print('Export error: $e');
       }
       if (mounted) {
@@ -208,7 +207,7 @@ class _HomeShellState extends State<HomeShell> {
 
       final preview = await _stepRepository.previewImport(json);
 
-      var importSettings = true;
+      var importSettings = false;
       var mode = ImportMode.mergeSkip;
 
       if (!mounted) return;
@@ -230,7 +229,7 @@ class _HomeShellState extends State<HomeShell> {
                     CheckboxListTile(
                       contentPadding: EdgeInsets.zero,
                       value: importSettings,
-                      onChanged: (v) => setState(() => importSettings = v ?? true),
+                      onChanged: (v) => setState(() => importSettings = v ?? false),
                       title: const Text('Importuj ustawienia'),
                     ),
                     const SizedBox(height: 8),
@@ -315,7 +314,6 @@ class _HomeShellState extends State<HomeShell> {
       );
     } catch (e) {
       if (kDebugMode) {
-        // ignore: avoid_print
         print('Import error: $e');
       }
       if (mounted) {

@@ -37,7 +37,6 @@ class StepCounterChannel(
         private const val KEY_GOAL_NOTIFICATION_ENABLED = "goal_notification_enabled"
         private const val KEY_GOAL_LAST_NOTIFIED_DATE = "goal_last_notified_date"
 
-        // Runtime-only state from sensor (do NOT export/import)
         private const val KEY_LAST_SENSOR_VALUE = "last_sensor_value"
 
         private const val EXPORT_SCHEMA = "step_counter_export"
@@ -172,7 +171,6 @@ class StepCounterChannel(
 
         val data = JSONObject()
 
-        // Days
         val days = JSONObject()
         val all = prefs.all
         val dayKeys = all.keys
@@ -204,20 +202,17 @@ class StepCounterChannel(
 
         data.put("days", days)
 
-        // Settings
         val settings = JSONObject()
         settings.put(KEY_DAILY_GOAL_STEPS, prefs.getInt(KEY_DAILY_GOAL_STEPS, 8000))
         settings.put(KEY_GOAL_NOTIFICATION_ENABLED, prefs.getBoolean(KEY_GOAL_NOTIFICATION_ENABLED, true))
         settings.put(StepTrackingService.KEY_TRACKING_ENABLED, prefs.getBoolean(StepTrackingService.KEY_TRACKING_ENABLED, true))
         data.put("settings", settings)
 
-        // Meta
         val meta = JSONObject()
         val lastNotified = prefs.getString(KEY_GOAL_LAST_NOTIFIED_DATE, null)
         if (lastNotified != null) meta.put(KEY_GOAL_LAST_NOTIFIED_DATE, lastNotified) else meta.put(KEY_GOAL_LAST_NOTIFIED_DATE, JSONObject.NULL)
         data.put("meta", meta)
 
-        // Extras (future-proof): export unknown keys except history + runtime-only
         val extras = JSONObject()
         val reservedPrefixes = listOf(KEY_DAY_TOTAL_PREFIX, KEY_DAY_HOURLY_PREFIX, KEY_GOAL_ACHIEVED_PREFIX)
         val reservedExact = setOf(
@@ -253,7 +248,6 @@ class StepCounterChannel(
             ?: throw IllegalArgumentException("VALIDATION_FAILED: missing data")
         val days = data.optJSONObject("days")
             ?: throw IllegalArgumentException("VALIDATION_FAILED: missing days")
-        // at least ensure it's an object
         return root
     }
 
@@ -365,7 +359,6 @@ class StepCounterChannel(
                 }
             }
 
-            // Optionally restore extras too
             val extras = data.optJSONObject("extras")
             if (extras != null) {
                 for (k in extras.keys()) {
@@ -395,6 +388,62 @@ class StepCounterChannel(
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+            "getRetentionPolicy" -> {
+                val mode = prefs.getString(
+                    StepTrackingService.KEY_RETENTION_MODE,
+                    "NEVER"
+                ) ?: "NEVER"
+
+                val days = prefs.getInt(
+                    StepTrackingService.KEY_RETENTION_DAYS,
+                    -1
+                )
+
+                val lastCleanup = prefs.getLong(
+                    StepTrackingService.KEY_RETENTION_LAST_CLEANUP,
+                    0L
+                )
+
+                result.success(
+                    mapOf(
+                        "mode" to mode,
+                        "days" to days,
+                        "last_cleanup" to lastCleanup
+                    )
+                )
+            }
+            "setRetentionPolicy" -> {
+                val args = call.arguments as? Map<*, *>
+                if (args == null) {
+                    result.error("ARG_ERROR", "args is null", null)
+                    return
+                }
+
+                val mode = args["mode"] as? String
+                val daysRaw = args["days"] as? Int
+
+                if (mode == null) {
+                    result.error("ARG_ERROR", "mode is null", null)
+                    return
+                }
+
+                val editor = prefs.edit()
+                editor.putString(StepTrackingService.KEY_RETENTION_MODE, mode)
+
+                if (mode == "DAYS") {
+                    if (daysRaw == null) {
+                        result.error("ARG_ERROR", "days required for DAYS mode", null)
+                        return
+                    }
+                    val days = daysRaw.coerceIn(1, 365)
+                    editor.putInt(StepTrackingService.KEY_RETENTION_DAYS, days)
+                } else {
+                    editor.remove(StepTrackingService.KEY_RETENTION_DAYS)
+                }
+
+                editor.apply()
+                result.success(null)
+            }
             "exportData" -> {
                 try {
                     result.success(exportAllDataAsJson())
@@ -540,7 +589,6 @@ class StepCounterChannel(
 
             "startTrackingService" -> {
                 try {
-                    // Flaga ON
                     prefs.edit()
                         .putBoolean(StepTrackingService.KEY_TRACKING_ENABLED, true)
                         .apply()
@@ -566,7 +614,6 @@ class StepCounterChannel(
                         .putBoolean(StepTrackingService.KEY_TRACKING_ENABLED, false)
                         .apply()
 
-                    // Zatrzymaj serwis
                     val intent = Intent(context, StepTrackingService::class.java)
                     context.stopService(intent)
 

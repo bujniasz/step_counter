@@ -14,21 +14,40 @@ abstract class StepCounterRepository {
 
   Future<void> setTrackingEnabled(bool enabled);
 
-  // ─────────────────────────────────────────
-  // Import / Export
-  // ─────────────────────────────────────────
-  /// Returns full export JSON string (schema_versioned).
+
   Future<String> exportDataJson();
 
-  /// Parses and validates JSON and returns summary.
   Future<ImportPreview> previewImport(String json);
 
-  /// Imports data using chosen mode.
   Future<ImportResult> importData(
     String json, {
     required ImportMode mode,
     bool importSettings = true,
   });
+}
+
+enum RetentionMode { never, days }
+
+class RetentionPolicy {
+  const RetentionPolicy({
+    required this.mode,
+    required this.days,
+    required this.lastCleanup,
+  });
+
+  final RetentionMode mode;
+  final int? days;
+  final DateTime? lastCleanup;
+
+  factory RetentionPolicy.fromMap(Map<dynamic, dynamic> map) {
+    return RetentionPolicy(
+      mode: map['mode'] == 'DAYS' ? RetentionMode.days : RetentionMode.never,
+      days: (map['days'] as int?)?.clamp(0, 365),
+      lastCleanup: map['last_cleanup'] != null && map['last_cleanup'] != 0
+          ? DateTime.fromMillisecondsSinceEpoch(map['last_cleanup'])
+          : null,
+    );
+  }
 }
 
 enum ImportMode {
@@ -137,7 +156,6 @@ class MockStepCounterRepository implements StepCounterRepository {
 
   @override
   Future<int?> getAchievedGoalForDate(DateTime day) async {
-    // Proste: uznaj, że celem jest 8000 i jeśli mockowane kroki >= 8000, to cel spełniony.
     final steps = _stepsForDateSync(_truncate(day));
     const goal = 8000;
     return steps >= goal ? goal : null;
@@ -156,10 +174,8 @@ class MockStepCounterRepository implements StepCounterRepository {
     return streak;
   }
 
-  // Import/Export (mock)
   @override
   Future<String> exportDataJson() async {
-    // Minimal valid schema.
     return '{"schema":"step_counter_export","schema_version":1,"exported_at":"mock","app":{"platform":"mock","package":"mock"},"data":{"days":{},"settings":{},"meta":{},"extras":{}}}';
   }
 

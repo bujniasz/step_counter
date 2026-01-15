@@ -27,7 +27,7 @@ class GoalStore {
     try {
       await _channel.invokeMethod('setDailyGoal', steps);
     } catch (_) {
-      // pomijamy błąd – nie chcemy wywalać aplikacji
+      // ignore
     }
   }
 

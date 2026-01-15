@@ -46,7 +46,6 @@ class AndroidStepCounterRepository implements StepCounterRepository {
       },
       onError: (error, stack) {
         if (kDebugMode) {
-          // only in debug
           print('Step counter event error: $error');
         }
       },
@@ -77,11 +76,9 @@ class AndroidStepCounterRepository implements StepCounterRepository {
           print('getTodaySteps error: $e');
         }
       }
-      // Fallback: last known valeu
       return _lastTodaySteps;
     }
 
-    // other days - read from history
     try {
       final result = await _methodChannel.invokeMethod<int>(
         'getStepsForDate',
@@ -124,7 +121,6 @@ class AndroidStepCounterRepository implements StepCounterRepository {
       }
     }
 
-    // read from history
     try {
       final result = await _methodChannel
           .invokeMethod<List<dynamic>>('getHourlyStepsForDate', dateKey);
@@ -210,9 +206,6 @@ class AndroidStepCounterRepository implements StepCounterRepository {
     return streak;
   }
 
-  // ─────────────────────────────────────────
-  // Import / Export
-  // ─────────────────────────────────────────
   @override
   Future<String> exportDataJson() async {
     try {
@@ -276,5 +269,28 @@ class AndroidStepCounterRepository implements StepCounterRepository {
       rethrow;
     }
   }
+
+  Future<RetentionPolicy> getRetentionPolicy() async {
+    final map =
+        await _methodChannel.invokeMethod<Map>('getRetentionPolicy');
+    return RetentionPolicy.fromMap(map ?? {});
+  }
+
+  Future<void> setRetentionPolicy({
+    required RetentionMode mode,
+    int? days,
+  }) async {
+    if (mode == RetentionMode.days) {
+      assert(days != null && days >= 1 && days <= 365);
+    }
+
+    await _methodChannel.invokeMethod(
+      'setRetentionPolicy',
+      {
+        'mode': mode == RetentionMode.days ? 'DAYS' : 'NEVER',
+        if (mode == RetentionMode.days) 'days': days,
+      },
+    );
+}
 
 }
